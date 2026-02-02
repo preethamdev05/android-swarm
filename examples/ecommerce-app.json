@@ -1,0 +1,17 @@
+{
+  "app_name": "ShopApp",
+  "features": [
+    "product_list",
+    "product_detail",
+    "search",
+    "cart",
+    "checkout",
+    "user_profile"
+  ],
+  "architecture": "MVVM",
+  "ui_system": "Compose",
+  "min_sdk": 24,
+  "target_sdk": 34,
+  "gradle_version": "8.2.0",
+  "kotlin_version": "1.9.20"
+}

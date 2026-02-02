@@ -1,0 +1,15 @@
+{
+  "app_name": "WeatherApp",
+  "features": [
+    "current_weather",
+    "forecast",
+    "location_search",
+    "favorites"
+  ],
+  "architecture": "MVI",
+  "ui_system": "Compose",
+  "min_sdk": 24,
+  "target_sdk": 34,
+  "gradle_version": "8.2.0",
+  "kotlin_version": "1.9.20"
+}

@@ -1,0 +1,15 @@
+{
+  "app_name": "TodoApp",
+  "features": [
+    "add_task",
+    "list_tasks",
+    "complete_task",
+    "delete_task"
+  ],
+  "architecture": "MVVM",
+  "ui_system": "Compose",
+  "min_sdk": 24,
+  "target_sdk": 34,
+  "gradle_version": "8.2.0",
+  "kotlin_version": "1.9.20"
+}
