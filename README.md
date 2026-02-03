@@ -127,10 +127,10 @@ node dist/index.js cleanup --older-than 7d --failed-only
 Start the local monitoring UI (read-only, polling, no agent execution):
 
 ```bash
-node dist/index.js ui --port 4317
+node dist/index.js ui --port 8080
 ```
 
-Then open: `http://127.0.0.1:4317`
+Then open: `http://127.0.0.1:8080`
 
 ## Output
 
@@ -218,6 +218,7 @@ Graceful shutdown on SIGINT/SIGTERM:
 - The UI binds only to `127.0.0.1` for local access.
 - Keep the Termux/proot session active while running the UI or agent.
 - The UI is read-only (status, logs, files, progress, heartbeat) and uses polling only.
+- Android may kill background Termux sessions; keep the session in the foreground for long-running tasks.
 
 ## Progress and Observability
 

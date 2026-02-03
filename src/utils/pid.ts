@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { logger } from '../logger.js';
 
 export type PidInspectionStatus = 'missing' | 'active' | 'stale' | 'invalid';
 
@@ -37,6 +38,7 @@ export function cleanupStalePidFile(pidFilePath: string): PidInspection {
   const inspection = inspectPidFile(pidFilePath);
 
   if (inspection.status === 'stale' || inspection.status === 'invalid') {
+    logger.warn('Removing stale PID file', { pid: inspection.pid, status: inspection.status });
     try {
       unlinkSync(pidFilePath);
     } catch {
