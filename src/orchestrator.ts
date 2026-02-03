@@ -128,9 +128,15 @@ export class Orchestrator {
     this.checkLimits();
 
     let plan: Step[];
+    let response: any;
     try {
-      plan = await this.plannerAgent.createPlan(this.state.task_spec);
-      this.recordAPICall('planner');
+      // CORRECTIVE FIX: Capture response object to extract token usage
+      response = await this.plannerAgent.createPlan(this.state.task_spec);
+      plan = response.plan;
+      
+      // CORRECTIVE FIX: Extract and record token usage from LLM response
+      const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      this.recordAPICall('planner', usage.prompt_tokens, usage.completion_tokens);
     } catch (err) {
       logger.error('Planner failed', { error: String(err) });
       throw new Error(`Planning failed: ${err}`);
@@ -198,14 +204,20 @@ export class Orchestrator {
       }
 
       // Coder phase
+      let coderResponse: any;
       try {
-        stepState.coder_output = await this.coderAgent.generateFile(
+        // CORRECTIVE FIX: Capture full response to extract token usage
+        coderResponse = await this.coderAgent.generateFile(
           step,
           this.state.task_spec,
           this.state.completed_files,
           stepState.critic_issues || undefined
         );
-        this.recordAPICall('coder');
+        stepState.coder_output = coderResponse.content;
+        
+        // CORRECTIVE FIX: Extract and record token usage
+        const usage = coderResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
+        this.recordAPICall('coder', usage.prompt_tokens, usage.completion_tokens);
       } catch (err) {
         // Classify error type
         const isTransient = isTransientError(err);
@@ -233,16 +245,20 @@ export class Orchestrator {
       }
 
       // Critic phase
-      const criticResult = await this.criticAgent.reviewFile(
+      let criticResponse: any;
+      criticResponse = await this.criticAgent.reviewFile(
         step.file_path,
         stepState.coder_output,
         step,
         this.state.task_spec
       );
-      this.recordAPICall('critic');
+      
+      // CORRECTIVE FIX: Extract and record token usage
+      const criticUsage = criticResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      this.recordAPICall('critic', criticUsage.prompt_tokens, criticUsage.completion_tokens);
 
-      stepState.critic_decision = criticResult.decision;
-      stepState.critic_issues = criticResult.issues;
+      stepState.critic_decision = criticResponse.decision;
+      stepState.critic_issues = criticResponse.issues;
 
       this.stateManager.recordStep(
         this.state.task_id,
@@ -254,7 +270,7 @@ export class Orchestrator {
         stepState.critic_issues
       );
 
-      if (criticResult.decision === 'ACCEPT') {
+      if (criticResponse.decision === 'ACCEPT') {
         // Success path
         this.stateManager.writeFile(
           this.state.task_id,
@@ -276,14 +292,14 @@ export class Orchestrator {
       logger.warn('Step rejected by Critic', {
         step: step.step_number,
         attempt: stepState.attempt,
-        issues: criticResult.issues.length,
+        issues: criticResponse.issues.length,
         consecutive_rejections: this.consecutiveCriticRejections
       });
 
       if (stepState.attempt >= LIMITS.MAX_STEP_RETRIES) {
         throw new Error(
           `Step ${step.step_number} rejected after ${LIMITS.MAX_STEP_RETRIES} attempts. ` +
-          `Issues: ${JSON.stringify(criticResult.issues.slice(0, 3))}`
+          `Issues: ${JSON.stringify(criticResponse.issues.slice(0, 3))}`
         );
       }
       
@@ -301,8 +317,13 @@ export class Orchestrator {
     const files = this.stateManager.getAllFiles(this.state.task_id);
     
     try {
-      const report = await this.verifierAgent.verifyProject(files, this.state.task_spec);
-      this.recordAPICall('verifier');
+      // CORRECTIVE FIX: Capture response to extract token usage
+      const verifierResponse = await this.verifierAgent.verifyProject(files, this.state.task_spec);
+      const report = verifierResponse.report;
+      
+      // CORRECTIVE FIX: Extract and record token usage
+      const usage = verifierResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      this.recordAPICall('verifier', usage.prompt_tokens, usage.completion_tokens);
 
       logger.info('Verification complete', {
         task_id: this.state.task_id,
@@ -348,7 +369,7 @@ export class Orchestrator {
       throw new LimitExceededError('API call limit exceeded', 'api_calls');
     }
 
-    // Token limit
+    // Token limit (now functional after fix)
     if (task.total_tokens >= LIMITS.MAX_TOTAL_TOKENS) {
       throw new LimitExceededError('Token limit exceeded', 'tokens');
     }
@@ -391,10 +412,26 @@ export class Orchestrator {
     }
   }
 
-  private recordAPICall(agent: string): void {
+  /**
+   * CORRECTIVE FIX: Updated signature to accept token usage data.
+   * Records API call and token usage in database for limit enforcement.
+   * 
+   * Non-breaking change: Existing behavior preserved, now with token tracking.
+   */
+  private recordAPICall(agent: string, promptTokens: number, completionTokens: number): void {
     if (!this.state) return;
 
+    // Record in database with token data
+    this.stateManager.recordAPICall(
+      this.state.task_id,
+      agent,
+      promptTokens,
+      completionTokens
+    );
+
+    // Update in-memory state
     this.state.api_call_count++;
+    this.state.total_tokens += (promptTokens + completionTokens);
     this.state.last_activity_time = Date.now();
   }
 
