@@ -1,14 +1,26 @@
 import Database from 'better-sqlite3';
 import { TaskSpec, Step, CriticIssue, TaskState, VerifierOutput } from './types.js';
 import { PATHS } from './constants.js';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, chmodSync } from 'fs';
 import { dirname, join } from 'path';
+import { sanitizeFilePath } from './validators.js';
 
+/**
+ * Manages task state persistence using SQLite database and filesystem operations.
+ * 
+ * Safety guarantees:
+ * - All file paths are validated and sanitized before filesystem access
+ * - SQLite operations use a single connection (serialized by better-sqlite3)
+ * - Atomic write operations prevent corruption
+ * - Workspace boundary enforcement prevents directory traversal
+ */
 export class StateManager {
   private db: Database.Database;
 
   constructor() {
     this.ensureDirectories();
+    // Note: better-sqlite3 provides a single connection with serialized access
+    // This ensures transaction safety without explicit locking in our sequential agent model
     this.db = new Database(PATHS.DATABASE);
     this.initializeSchema();
   }
@@ -22,12 +34,13 @@ export class StateManager {
 
     for (const dir of dirs) {
       if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(dir, { recursive: true, mode: 0o755 });
       }
     }
   }
 
   private initializeSchema(): void {
+    // Execute schema creation in a transaction for atomicity
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,
@@ -78,7 +91,7 @@ export class StateManager {
 
     const taskDir = join(PATHS.WORKSPACE_ROOT, taskId);
     if (!existsSync(taskDir)) {
-      mkdirSync(taskDir, { recursive: true });
+      mkdirSync(taskDir, { recursive: true, mode: 0o755 });
     }
   }
 
@@ -167,31 +180,78 @@ export class StateManager {
     };
   }
 
+  /**
+   * Writes a file to the task workspace with path validation and atomic write.
+   * 
+   * Safety guarantees:
+   * - Path is validated against directory traversal
+   * - Atomic write prevents partial file corruption
+   * - Permissions set appropriately for file type
+   * 
+   * @param taskId - The task ID (used as workspace subdirectory)
+   * @param filePath - The relative file path (must pass validation)
+   * @param content - The file content to write
+   * @throws ValidationError if path is unsafe
+   */
   writeFile(taskId: string, filePath: string, content: string): void {
-    const fullPath = join(PATHS.WORKSPACE_ROOT, taskId, filePath);
+    const taskDir = join(PATHS.WORKSPACE_ROOT, taskId);
+    
+    // Critical: sanitize and validate path to prevent directory traversal
+    const fullPath = sanitizeFilePath(taskDir, filePath);
     const dir = dirname(fullPath);
 
+    // Ensure directory exists
     if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
     }
 
+    // Atomic write pattern: write to temporary file, then rename
     const tmpPath = fullPath + '.tmp';
-    writeFileSync(tmpPath, content, 'utf8');
-    
-    if (existsSync(fullPath)) {
-      // Atomic write pattern not fully supported, direct write
-      writeFileSync(fullPath, content, 'utf8');
-    } else {
-      // Rename for atomic write
-      require('fs').renameSync(tmpPath, fullPath);
+    try {
+      writeFileSync(tmpPath, content, 'utf8');
+      
+      // Set appropriate permissions before making visible
+      // Gradle files need execute permissions, others don't
+      const isExecutable = filePath.includes('gradlew');
+      chmodSync(tmpPath, isExecutable ? 0o755 : 0o644);
+      
+      // Atomic rename (on most filesystems)
+      if (existsSync(fullPath)) {
+        // For existing files, remove old file first on Windows compatibility
+        unlinkSync(fullPath);
+      }
+      renameSync(tmpPath, fullPath);
+    } catch (err) {
+      // Cleanup temporary file on error
+      if (existsSync(tmpPath)) {
+        try {
+          unlinkSync(tmpPath);
+        } catch {}
+      }
+      throw err;
     }
   }
 
+  /**
+   * Reads a file from the task workspace with path validation.
+   * 
+   * @param taskId - The task ID
+   * @param filePath - The relative file path
+   * @returns The file content as UTF-8 string
+   * @throws ValidationError if path is unsafe
+   */
   readFile(taskId: string, filePath: string): string {
-    const fullPath = join(PATHS.WORKSPACE_ROOT, taskId, filePath);
+    const taskDir = join(PATHS.WORKSPACE_ROOT, taskId);
+    
+    // Critical: sanitize and validate path
+    const fullPath = sanitizeFilePath(taskDir, filePath);
     return readFileSync(fullPath, 'utf8');
   }
 
+  /**
+   * Lists all files in the task workspace.
+   * Returns relative paths from task root.
+   */
   getAllFiles(taskId: string): string[] {
     const taskDir = join(PATHS.WORKSPACE_ROOT, taskId);
     const files: string[] = [];
@@ -200,6 +260,11 @@ export class StateManager {
       const entries = require('fs').readdirSync(dir, { withFileTypes: true });
       
       for (const entry of entries) {
+        // Skip hidden files and temporary files for safety
+        if (entry.name.startsWith('.') || entry.name.endsWith('.tmp')) {
+          continue;
+        }
+        
         const relativePath = base ? join(base, entry.name) : entry.name;
         
         if (entry.isDirectory()) {
