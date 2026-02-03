@@ -1,6 +1,6 @@
 # Android Swarm
 
-Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with NVIDIA NIM Kimi API integration.
+Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Google Gemini API integration.
 
 ## System Overview
 
@@ -37,15 +37,15 @@ This system generates complete Android applications using a multi-agent architec
 
 ### API Access
 
-- **NVIDIA NIM API key** (set as `KIMI_API_KEY` environment variable)
-- Get your API key from the NVIDIA API portal.
+- **Google Gemini API key** (set as `KIMI_API_KEY` environment variable)
+- Get your API key from: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
 
 ## Installation
 
 ### 1. Install Dependencies
 
 ```bash
-npm install
+npm ci
 ```
 
 ### 2. Build
@@ -57,8 +57,8 @@ npm run build
 ### 3. Set Environment Variables
 
 ```bash
-# Set your NVIDIA NIM API key
-export KIMI_API_KEY="nvapi-..."  # NVIDIA NIM API key
+# Set your Google Gemini API key
+export KIMI_API_KEY="AIza..."  # Google Gemini API key from https://aistudio.google.com/app/apikey
 ```
 
 Optional variables:
@@ -67,6 +67,7 @@ Optional variables:
 export SWARM_DEBUG=1                    # Enable debug logging
 export SWARM_API_TIMEOUT=120            # API timeout in seconds (default: 120)
 export SWARM_WORKSPACE_ROOT=~/.openclaw/workspace/android-swarm
+export LLM_MODEL=gemini-1.5-pro         # Override default model (optional)
 ```
 
 ## Usage
@@ -215,10 +216,41 @@ Graceful shutdown on SIGINT/SIGTERM:
 
 ## Termux Notes & Limitations
 
+### Required Termux Packages
+
+For native module compilation (`better-sqlite3`):
+
+```bash
+pkg install build-essential python nodejs-lts
+```
+
+### Runtime Considerations
+
 - The UI binds only to `127.0.0.1` for local access.
 - Keep the Termux/proot session active while running the UI or agent.
 - The UI is read-only (status, logs, files, progress, heartbeat) and uses polling only.
 - Android may kill background Termux sessions; keep the session in the foreground for long-running tasks.
+- For long tasks (90min), use `tmux` or `screen` to prevent termination:
+
+```bash
+# Install tmux
+pkg install tmux
+
+# Start session
+tmux new -s swarm
+node dist/index.js agent --message '...'
+
+# Detach: Ctrl+B, then D
+# Re-attach: tmux attach -t swarm
+```
+
+### File Descriptor Limits
+
+Increase if needed:
+
+```bash
+ulimit -n 4096
+```
 
 ## Progress and Observability
 
@@ -272,15 +304,15 @@ Tables:
 
 ### "KIMI_API_KEY environment variable is required"
 
-Set the **NVIDIA NIM API key** (environment variable name is `KIMI_API_KEY` for compatibility):
+Set the **Google Gemini API key** (environment variable name is `KIMI_API_KEY` for backward compatibility):
 
 ```bash
-export KIMI_API_KEY="nvapi-..."
+export KIMI_API_KEY="AIza..."
 ```
 
-Get your API key from the NVIDIA API portal.
+Get your API key from: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
 
-**Important**: This system uses NVIDIA NIM's Kimi endpoint. Ensure you obtain an NVIDIA API key.
+**Important**: This system uses Google Gemini API. The environment variable is named `KIMI_API_KEY` for historical reasons but expects a Gemini API key.
 
 ### "Another task is running"
 
@@ -310,11 +342,18 @@ To resolve:
 
 Task took longer than 90 minutes. Review task complexity.
 
-### "Quota exceeded" or "Rate limit"
+### "Quota exceeded" or "Rate limit" (Gemini API)
 
-NVIDIA NIM rate limits vary by account tier. Check your NVIDIA API plan for request and token limits.
+Google Gemini API has rate limits:
+- **Free tier**: 15 requests per minute, 1 million tokens per day
+- **Paid tier**: Higher limits based on plan
 
-Wait a few minutes and retry, or upgrade to paid tier.
+Check your quota at: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+
+To resolve:
+- Wait a few minutes and retry
+- Reduce task complexity
+- Upgrade to paid tier for higher limits
 
 ### "File size exceeds limit"
 
@@ -324,6 +363,14 @@ Generated file exceeds 50KB limit. This is enforced before disk write to prevent
 - API response corruption
 
 File size warnings are logged when file approaches 80% of limit (40KB).
+
+### "Invalid API key" or "Authentication failed"
+
+Verify your Gemini API key:
+1. Check key is correct: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+2. Ensure key starts with `AIza`
+3. Verify API is enabled in Google Cloud Console
+4. Check for typos in environment variable
 
 ## Development
 
@@ -338,7 +385,7 @@ src/
     verifier.ts     # Project validation
   orchestrator.ts   # Task coordination
   state-manager.ts  # SQLite and filesystem
-  kimi-client.ts    # NVIDIA NIM Kimi API client
+  kimi-client.ts    # Google Gemini API client
   validators.ts     # Input validation
   coding-profile.ts # Kotlin/Android standards
   logger.ts         # Logging utility
@@ -363,30 +410,29 @@ npm run dev  # Watch mode
 
 ## API Integration
 
-This system uses **NVIDIA NIM Kimi API**:
+This system uses **Google Gemini API**:
 
-- **Endpoint**: `https://integrate.api.nvidia.com/v1/chat/completions`
-- **Model**: `moonshotai/kimi-k2.5` (256k context window)
-- **Authentication**: `Authorization: Bearer <api-key>`
+- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent`
+- **Model**: `gemini-1.5-pro` (2M context window, configured via `LLM_MODEL` env var)
+- **Authentication**: `x-goog-api-key: <api-key>` header
 - **Default Timeout**: 120 seconds
 
-**Request Format** (non-streaming):
+**Request Format**:
 ```json
 {
-  "model": "moonshotai/kimi-k2.5",
-  "messages": [{"role": "user", "content": "..."}],
-  "max_tokens": 16384,
-  "temperature": 1.0,
-  "top_p": 1.0,
-  "stream": false,
-  "chat_template_kwargs": {"thinking": true}
+  "contents": [{"role": "user", "parts": [{"text": "..."}]}],
+  "generationConfig": {
+    "maxOutputTokens": 16384,
+    "temperature": 1.0,
+    "topP": 1.0
+  }
 }
 ```
 
 **Token Usage Tracking**: The system extracts token usage from API responses:
 ```typescript
-response.usage.prompt_tokens      // Input tokens
-response.usage.completion_tokens  // Output tokens
+response.usageMetadata.promptTokenCount       // Input tokens
+response.usageMetadata.candidatesTokenCount   // Output tokens
 ```
 These values are recorded in the database and used for limit enforcement.
 
