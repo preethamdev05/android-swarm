@@ -6,7 +6,11 @@ import { TOKEN_LIMITS } from '../constants.js';
 export class PlannerAgent {
   constructor(private kimiClient: KimiClient) {}
 
-  async createPlan(taskSpec: TaskSpec): Promise<Step[]> {
+  /**
+   * CORRECTIVE FIX: Updated to return {plan, usage} for token accounting.
+   * Orchestrator extracts usage data for limit enforcement.
+   */
+  async createPlan(taskSpec: TaskSpec): Promise<{ plan: Step[]; usage: { prompt_tokens: number; completion_tokens: number } }> {
     const prompt = this.buildPrompt(taskSpec);
     
     const messages = [
@@ -34,7 +38,11 @@ export class PlannerAgent {
       throw new Error('Planner response must be a JSON array');
     }
 
-    return plan as Step[];
+    // CORRECTIVE FIX: Return both plan and usage data
+    return {
+      plan: plan as Step[],
+      usage: response.usage || { prompt_tokens: 0, completion_tokens: 0 }
+    };
   }
 
   private buildPrompt(taskSpec: TaskSpec): string {

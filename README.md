@@ -1,6 +1,6 @@
 # Android Swarm
 
-Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Kimi K2.5 integration via NVIDIA NIM.
+Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Google Gemini API integration.
 
 ## System Overview
 
@@ -22,6 +22,8 @@ This system generates complete Android applications using a multi-agent architec
 - Automatic code review and retry mechanism
 - SQLite-based state persistence
 - Comprehensive error handling and circuit breakers
+- Real-time progress logging with step counts and timing metrics
+- Token usage tracking and enforcement
 
 ## Requirements
 
@@ -35,8 +37,10 @@ This system generates complete Android applications using a multi-agent architec
 
 ### API Access
 
-- Kimi K2.5 API key via NVIDIA NIM (set as `KIMI_API_KEY` environment variable)
-- Get your API key: https://build.nvidia.com/moonshotai/kimi-k2_5
+- **Google Gemini API key** (set as `KIMI_API_KEY` environment variable)
+- Get your free API key: https://aistudio.google.com/app/apikey
+
+**Note**: The environment variable name `KIMI_API_KEY` is preserved for backward compatibility, but this system uses **Google Gemini API**, not Moonshot/Kimi API. Ensure you obtain a Gemini API key from Google AI Studio.
 
 ## Installation
 
@@ -55,14 +59,15 @@ npm run build
 ### 3. Set Environment Variables
 
 ```bash
-export KIMI_API_KEY="nvapi-..."
+# Set your Google Gemini API key
+export KIMI_API_KEY="AIzaSy..."  # Note: Expects Gemini API key despite variable name
 ```
 
 Optional variables:
 
 ```bash
 export SWARM_DEBUG=1                    # Enable debug logging
-export SWARM_API_TIMEOUT=30             # API timeout in seconds
+export SWARM_API_TIMEOUT=120            # API timeout in seconds (default: 120)
 export SWARM_WORKSPACE_ROOT=~/.openclaw/workspace/android-swarm
 ```
 
@@ -161,19 +166,22 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Limits and Safety Controls
 
-### Hard Caps
+### Hard Caps (Enforced)
 
-- **API Calls**: 80 per task
-- **Total Tokens**: 200,000 per task
-- **Wall-Clock Timeout**: 90 minutes
-- **Step Retries**: 3 per step
-- **Plan Size**: 25 steps maximum
-- **File Size**: 50KB per generated file
+- **API Calls**: 80 per task (enforced via database tracking)
+- **Total Tokens**: 200,000 per task (enforced via token accounting from LLM responses)
+- **Wall-Clock Timeout**: 90 minutes (enforced via timer)
+- **Step Retries**: 3 per step (enforced per step)
+- **Plan Size**: 25 steps maximum (enforced during plan validation)
+- **File Size**: 50KB per generated file (enforced before disk write)
+
+**Token Limit Enforcement**: Token usage is extracted from LLM API responses (prompt_tokens + completion_tokens) and accumulated in the database. When total_tokens reaches 200,000, task execution is aborted with `LimitExceededError`.
 
 ### Circuit Breakers
 
 - **Consecutive Failures**: Aborts after 3 consecutive step failures
 - **API Error Rate**: Aborts after 5 API errors within 60 seconds
+- **Feedback Loop Detection**: Aborts after 6 consecutive Critic rejections
 
 ### Emergency Stop
 
@@ -181,6 +189,33 @@ Create this file to abort all running tasks:
 
 ```bash
 touch ~/.openclaw/workspace/android-swarm/EMERGENCY_STOP
+```
+
+### Signal Handling
+
+Graceful shutdown on SIGINT/SIGTERM:
+- PID file cleanup guaranteed
+- Database connection closed properly
+- Task state marked as FAILED
+- Finally blocks execute reliably
+
+## Progress and Observability
+
+### Real-Time Progress Logging
+
+During execution, the system logs:
+
+- **Step Progress**: "Step 5/25 (20%) completed"
+- **Phase Timing**: Planning, execution, verification durations
+- **Step Duration**: Individual step execution time
+- **Token Usage**: Cumulative token consumption per agent
+
+Example log output:
+
+```
+[INFO] Executing step { step: 5, progress: "5/25", progress_percent: 20, file: "MainActivity.kt" }
+[INFO] Step completed { step: 5, progress: "5/25 (20%)", duration_ms: 8432 }
+[INFO] Execution phase complete { total_steps: 25, duration_ms: 180245, duration_min: 3 }
 ```
 
 ## Logging
@@ -194,8 +229,8 @@ Logs are written to:
 Log levels:
 
 - **ERROR**: Task aborts, critical failures
-- **WARN**: Retries, recoverable issues
-- **INFO**: Task lifecycle events
+- **WARN**: Retries, recoverable issues, file size warnings
+- **INFO**: Task lifecycle events, progress updates, phase timing
 - **DEBUG**: API request/response details (enable with `SWARM_DEBUG=1`)
 
 ## Database
@@ -208,21 +243,23 @@ Task state is persisted in SQLite:
 
 Tables:
 
-- `tasks`: Task records and metadata
+- `tasks`: Task records, metadata, token counts
 - `steps`: Step execution history
-- `api_calls`: API usage audit trail
+- `api_calls`: API usage audit trail with token usage
 
 ## Troubleshooting
 
 ### "KIMI_API_KEY environment variable is required"
 
-Set the API key:
+Set the **Gemini API key** (environment variable name is `KIMI_API_KEY` for compatibility):
 
 ```bash
-export KIMI_API_KEY="nvapi-..."
+export KIMI_API_KEY="AIzaSy..."
 ```
 
-Get your API key from: https://build.nvidia.com/moonshotai/kimi-k2_5
+Get your free API key from: https://aistudio.google.com/app/apikey
+
+**Important**: This system uses Google Gemini API. Ensure you obtain a Gemini API key, not Moonshot/Kimi API key.
 
 ### "Another task is running"
 
@@ -238,11 +275,37 @@ Task exceeded 80 API calls. Review task complexity or simplify features.
 
 ### "Token limit exceeded"
 
-Task exceeded 200,000 tokens. Reduce number of features or split into multiple tasks.
+Task exceeded 200,000 tokens. This limit is now enforced via token accounting:
+- Token usage is extracted from LLM responses
+- Accumulated in database per task
+- Task aborts when limit is reached
+
+To resolve:
+- Reduce number of features
+- Split into multiple smaller tasks
+- Simplify feature descriptions
 
 ### "Wall-clock timeout"
 
 Task took longer than 90 minutes. Review task complexity.
+
+### "Quota exceeded" or "Rate limit"
+
+Gemini free tier limits:
+- 15 requests per minute
+- 1 million tokens per minute
+- 1,500 requests per day
+
+Wait a few minutes and retry, or upgrade to paid tier.
+
+### "File size exceeds limit"
+
+Generated file exceeds 50KB limit. This is enforced before disk write to prevent:
+- Workspace bloat
+- Malformed generated code
+- API response corruption
+
+File size warnings are logged when file approaches 80% of limit (40KB).
 
 ## Development
 
@@ -257,7 +320,7 @@ src/
     verifier.ts     # Project validation
   orchestrator.ts   # Task coordination
   state-manager.ts  # SQLite and filesystem
-  kimi-client.ts    # Kimi K2.5 API client (NVIDIA NIM)
+  kimi-client.ts    # Gemini API client
   validators.ts     # Input validation
   coding-profile.ts # Kotlin/Android standards
   logger.ts         # Logging utility
@@ -282,12 +345,20 @@ npm run dev  # Watch mode
 
 ## API Integration
 
-This system uses NVIDIA NIM for Kimi K2.5 access:
+This system uses **Google Gemini API**:
 
-- **Endpoint**: `https://integrate.api.nvidia.com/v1/chat/completions`
-- **Model**: `moonshotai/kimi-k2.5`
-- **Authentication**: Bearer token (nvapi-* format)
-- **Parameters**: max_tokens=16384, temperature=1.0, thinking=true
+- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent`
+- **Model**: `gemini-1.5-pro` (128k context window)
+- **Authentication**: API key in URL query parameter
+- **Default Timeout**: 120 seconds
+- **Free Tier**: 15 RPM, 1M TPM, 1,500 requests/day
+
+**Token Usage Tracking**: The system extracts token usage from API responses:
+```typescript
+response.usage.prompt_tokens      // Input tokens
+response.usage.completion_tokens  // Output tokens
+```
+These values are recorded in the database and used for limit enforcement.
 
 ## Non-Goals
 
@@ -301,7 +372,7 @@ The system explicitly does NOT:
 - Support multi-session continuation
 - Execute generated code
 - Support multiple model providers
-- Provide real-time progress UI
+- Provide real-time progress UI (only logs)
 - Support cloud services
 - Generate documentation
 - Support rollback/undo

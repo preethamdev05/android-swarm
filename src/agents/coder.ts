@@ -6,12 +6,15 @@ import { LIMITS } from '../constants.js';
 export class CoderAgent {
   constructor(private kimiClient: KimiClient) {}
 
+  /**
+   * CORRECTIVE FIX: Updated to return {content, usage} for token accounting.
+   */
   async generateFile(
     step: Step,
     taskSpec: TaskSpec,
     completedFiles: string[],
     priorRejection?: CriticIssue[]
-  ): Promise<string> {
+  ): Promise<{ content: string; usage: { prompt_tokens: number; completion_tokens: number } }> {
     const prompt = this.buildPrompt(step, taskSpec, completedFiles, priorRejection);
     
     const messages = [
@@ -26,14 +29,19 @@ export class CoderAgent {
     ];
 
     const response = await this.kimiClient.chat(messages, 'coder');
-    const content = response.choices[0].message.content;
+    let content = response.choices[0].message.content;
 
+    // Preserve existing size limit check
     if (content.length > LIMITS.MAX_FILE_SIZE_BYTES) {
       console.warn(`File content exceeds ${LIMITS.MAX_FILE_SIZE_BYTES} bytes, truncating`);
-      return content.substring(0, LIMITS.MAX_FILE_SIZE_BYTES);
+      content = content.substring(0, LIMITS.MAX_FILE_SIZE_BYTES);
     }
 
-    return content;
+    // CORRECTIVE FIX: Return both content and usage
+    return {
+      content,
+      usage: response.usage || { prompt_tokens: 0, completion_tokens: 0 }
+    };
   }
 
   private buildPrompt(

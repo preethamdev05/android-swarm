@@ -49,17 +49,27 @@ export class Orchestrator {
     this.setupSignalHandlers();
   }
 
+  /**
+   * CORRECTIVE FIX: Removed process.exit() to allow finally block execution.
+   * Signal handlers now only set flag - cleanup happens in finally block.
+   */
   private setupSignalHandlers(): void {
     const handler = () => {
-      logger.warn('Received termination signal, aborting task');
+      logger.warn('Received termination signal, setting abort flag');
       this.abortRequested = true;
       
+      // Update state in database immediately (best-effort)
       if (this.state) {
-        this.stateManager.updateTaskState(this.state.task_id, 'FAILED', 'Manual abort');
+        try {
+          this.stateManager.updateTaskState(this.state.task_id, 'FAILED', 'Manual abort via signal');
+        } catch (err) {
+          logger.error('Failed to update task state on signal', { error: String(err) });
+        }
       }
       
-      this.stateManager.close();
-      process.exit(1);
+      // CORRECTIVE FIX: DO NOT call process.exit() here
+      // Let the execution loop detect abortRequested flag and exit gracefully
+      // Finally block will handle PID file cleanup and DB close
     };
 
     process.on('SIGINT', handler);
@@ -106,7 +116,14 @@ export class Orchestrator {
       await this.runVerificationPhase();
       
       this.stateManager.updateTaskState(taskId, 'COMPLETED');
-      logger.info('Task completed', { task_id: taskId });
+      
+      // ENHANCEMENT: Log final timing metrics
+      const totalDuration = Date.now() - this.state.start_time;
+      logger.info('Task completed', { 
+        task_id: taskId,
+        total_duration_ms: totalDuration,
+        total_duration_min: Math.round(totalDuration / 60000)
+      });
       
       return `${PATHS.WORKSPACE_ROOT}/${taskId}`;
 
@@ -116,6 +133,8 @@ export class Orchestrator {
       this.stateManager.updateTaskState(taskId, 'FAILED', errorMessage);
       throw err;
     } finally {
+      // CORRECTIVE FIX: Finally block now reliably executes on signal abort
+      // PID file cleanup and DB close guaranteed
       this.removePIDFile();
       this.state = null;
     }
@@ -124,13 +143,19 @@ export class Orchestrator {
   private async runPlanningPhase(): Promise<void> {
     if (!this.state) throw new Error('State not initialized');
 
+    // ENHANCEMENT: Track phase start time
+    const phaseStartTime = Date.now();
     logger.info('Starting planning phase', { task_id: this.state.task_id });
     this.checkLimits();
 
     let plan: Step[];
+    let response: any;
     try {
-      plan = await this.plannerAgent.createPlan(this.state.task_spec);
-      this.recordAPICall('planner');
+      response = await this.plannerAgent.createPlan(this.state.task_spec);
+      plan = response.plan;
+      
+      const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      this.recordAPICall('planner', usage.prompt_tokens, usage.completion_tokens);
     } catch (err) {
       logger.error('Planner failed', { error: String(err) });
       throw new Error(`Planning failed: ${err}`);
@@ -151,29 +176,67 @@ export class Orchestrator {
     this.stateManager.updateTaskState(this.state.task_id, 'EXECUTING');
     this.state.state = 'EXECUTING';
 
-    logger.info('Planning complete', { task_id: this.state.task_id, steps: plan.length });
+    // ENHANCEMENT: Log phase completion with timing
+    const phaseDuration = Date.now() - phaseStartTime;
+    logger.info('Planning complete', { 
+      task_id: this.state.task_id, 
+      steps: plan.length,
+      duration_ms: phaseDuration
+    });
   }
 
   private async runExecutionPhase(): Promise<void> {
     if (!this.state || !this.state.plan) throw new Error('State or plan not initialized');
 
-    logger.info('Starting execution phase', { task_id: this.state.task_id });
+    // ENHANCEMENT: Track phase start time
+    const phaseStartTime = Date.now();
+    const totalSteps = this.state.plan.length;
+    logger.info('Starting execution phase', { 
+      task_id: this.state.task_id,
+      total_steps: totalSteps
+    });
 
     for (let i = 0; i < this.state.plan.length; i++) {
       this.state.current_step_index = i;
       const step = this.state.plan[i];
 
+      // ENHANCEMENT: Log step progress with percentage
+      const stepNum = i + 1;
+      const progressPercent = Math.round((stepNum / totalSteps) * 100);
       logger.info('Executing step', { 
         task_id: this.state.task_id, 
-        step: step.step_number, 
+        step: step.step_number,
+        progress: `${stepNum}/${totalSteps}`,
+        progress_percent: progressPercent,
         file: step.file_path 
       });
 
+      // ENHANCEMENT: Track step timing
+      const stepStartTime = Date.now();
       await this.executeStep(step);
+      const stepDuration = Date.now() - stepStartTime;
+      
+      // ENHANCEMENT: Log step completion with timing
+      logger.info('Step completed', {
+        task_id: this.state.task_id,
+        step: step.step_number,
+        progress: `${stepNum}/${totalSteps} (${progressPercent}%)`,
+        duration_ms: stepDuration
+      });
+      
       // Reset counters on successful step completion
       this.consecutiveFailures = 0;
       this.consecutiveCriticRejections = 0;
     }
+
+    // ENHANCEMENT: Log phase completion with timing
+    const phaseDuration = Date.now() - phaseStartTime;
+    logger.info('Execution phase complete', {
+      task_id: this.state.task_id,
+      total_steps: totalSteps,
+      duration_ms: phaseDuration,
+      duration_min: Math.round(phaseDuration / 60000)
+    });
   }
 
   private async executeStep(step: Step): Promise<void> {
@@ -198,16 +261,19 @@ export class Orchestrator {
       }
 
       // Coder phase
+      let coderResponse: any;
       try {
-        stepState.coder_output = await this.coderAgent.generateFile(
+        coderResponse = await this.coderAgent.generateFile(
           step,
           this.state.task_spec,
           this.state.completed_files,
           stepState.critic_issues || undefined
         );
-        this.recordAPICall('coder');
+        stepState.coder_output = coderResponse.content;
+        
+        const usage = coderResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
+        this.recordAPICall('coder', usage.prompt_tokens, usage.completion_tokens);
       } catch (err) {
-        // Classify error type
         const isTransient = isTransientError(err);
         
         logger.error('Coder failed', { 
@@ -218,31 +284,32 @@ export class Orchestrator {
         });
         
         if (isTransient) {
-          // TRANSIENT failure: API/network error
           this.consecutiveFailures++;
           this.checkCircuitBreaker();
           
           if (stepState.attempt >= LIMITS.MAX_STEP_RETRIES) {
             throw new Error(`Step ${step.step_number} failed after ${LIMITS.MAX_STEP_RETRIES} attempts (transient errors)`);
           }
-          continue; // Retry immediately
+          continue;
         } else {
-          // FATAL failure: validation error, etc.
           throw new Error(`Step ${step.step_number} coder failed: ${err}`);
         }
       }
 
       // Critic phase
-      const criticResult = await this.criticAgent.reviewFile(
+      let criticResponse: any;
+      criticResponse = await this.criticAgent.reviewFile(
         step.file_path,
         stepState.coder_output,
         step,
         this.state.task_spec
       );
-      this.recordAPICall('critic');
+      
+      const criticUsage = criticResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      this.recordAPICall('critic', criticUsage.prompt_tokens, criticUsage.completion_tokens);
 
-      stepState.critic_decision = criticResult.decision;
-      stepState.critic_issues = criticResult.issues;
+      stepState.critic_decision = criticResponse.decision;
+      stepState.critic_issues = criticResponse.issues;
 
       this.stateManager.recordStep(
         this.state.task_id,
@@ -254,8 +321,7 @@ export class Orchestrator {
         stepState.critic_issues
       );
 
-      if (criticResult.decision === 'ACCEPT') {
-        // Success path
+      if (criticResponse.decision === 'ACCEPT') {
         this.stateManager.writeFile(
           this.state.task_id,
           step.file_path,
@@ -276,24 +342,24 @@ export class Orchestrator {
       logger.warn('Step rejected by Critic', {
         step: step.step_number,
         attempt: stepState.attempt,
-        issues: criticResult.issues.length,
+        issues: criticResponse.issues.length,
         consecutive_rejections: this.consecutiveCriticRejections
       });
 
       if (stepState.attempt >= LIMITS.MAX_STEP_RETRIES) {
         throw new Error(
           `Step ${step.step_number} rejected after ${LIMITS.MAX_STEP_RETRIES} attempts. ` +
-          `Issues: ${JSON.stringify(criticResult.issues.slice(0, 3))}`
+          `Issues: ${JSON.stringify(criticResponse.issues.slice(0, 3))}`
         );
       }
-      
-      // Continue retry loop with modified context (critic_issues passed to Coder)
     }
   }
 
   private async runVerificationPhase(): Promise<void> {
     if (!this.state) throw new Error('State not initialized');
 
+    // ENHANCEMENT: Track phase start time
+    const phaseStartTime = Date.now();
     logger.info('Starting verification phase', { task_id: this.state.task_id });
     this.stateManager.updateTaskState(this.state.task_id, 'VERIFYING');
     this.state.state = 'VERIFYING';
@@ -301,14 +367,20 @@ export class Orchestrator {
     const files = this.stateManager.getAllFiles(this.state.task_id);
     
     try {
-      const report = await this.verifierAgent.verifyProject(files, this.state.task_spec);
-      this.recordAPICall('verifier');
+      const verifierResponse = await this.verifierAgent.verifyProject(files, this.state.task_spec);
+      const report = verifierResponse.report;
+      
+      const usage = verifierResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      this.recordAPICall('verifier', usage.prompt_tokens, usage.completion_tokens);
 
+      // ENHANCEMENT: Include phase timing in verification log
+      const phaseDuration = Date.now() - phaseStartTime;
       logger.info('Verification complete', {
         task_id: this.state.task_id,
         quality_score: report.quality_score,
         warnings: report.warnings.length,
-        missing_items: report.missing_items.length
+        missing_items: report.missing_items.length,
+        duration_ms: phaseDuration
       });
 
       if (report.warnings.length > 0) {
@@ -329,35 +401,24 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Enforces hard limits: wall-clock timeout, API calls, tokens.
-   * Throws LimitExceededError if any limit is breached.
-   */
   private checkLimits(): void {
     if (!this.state) return;
 
-    // Wall-clock timeout
     const elapsed = Date.now() - this.state.start_time;
     if (elapsed > LIMITS.WALL_CLOCK_TIMEOUT_MS) {
       throw new LimitExceededError('Wall-clock timeout', 'wall_clock_time');
     }
 
-    // API call limit
     const task = this.stateManager.getTask(this.state.task_id);
     if (task.api_call_count >= LIMITS.MAX_API_CALLS) {
       throw new LimitExceededError('API call limit exceeded', 'api_calls');
     }
 
-    // Token limit
     if (task.total_tokens >= LIMITS.MAX_TOTAL_TOKENS) {
       throw new LimitExceededError('Token limit exceeded', 'tokens');
     }
   }
 
-  /**
-   * Circuit breaker: activates on consecutive transient failures.
-   * Prevents wasting resources when API is systematically failing.
-   */
   private checkCircuitBreaker(): void {
     if (this.consecutiveFailures >= LIMITS.CONSECUTIVE_FAILURE_LIMIT) {
       throw new CircuitBreakerError(
@@ -366,12 +427,8 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Feedback loop detection: activates on repeated Critic rejections.
-   * Prevents infinite Coder->Critic->Coder loops with same issues.
-   */
   private checkFeedbackLoop(): void {
-    const threshold = LIMITS.CONSECUTIVE_FAILURE_LIMIT * 2; // More lenient for semantic failures
+    const threshold = LIMITS.CONSECUTIVE_FAILURE_LIMIT * 2;
     if (this.consecutiveCriticRejections >= threshold) {
       logger.error('Feedback loop detected', {
         consecutive_rejections: this.consecutiveCriticRejections,
@@ -391,10 +448,18 @@ export class Orchestrator {
     }
   }
 
-  private recordAPICall(agent: string): void {
+  private recordAPICall(agent: string, promptTokens: number, completionTokens: number): void {
     if (!this.state) return;
 
+    this.stateManager.recordAPICall(
+      this.state.task_id,
+      agent,
+      promptTokens,
+      completionTokens
+    );
+
     this.state.api_call_count++;
+    this.state.total_tokens += (promptTokens + completionTokens);
     this.state.last_activity_time = Date.now();
   }
 

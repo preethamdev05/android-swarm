@@ -3,11 +3,11 @@ import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 
 /**
- * Kimi K2.5 API client (NVIDIA NIM format) with robust error handling and retry logic.
+ * Gemini API client with robust error handling and retry logic.
  * 
  * Error classification:
  * - TRANSIENT: 429 (rate limit), 5xx (server errors), timeouts, network errors
- * - FATAL: 401 (auth), 403 (quota), 400 (invalid request), context_length_exceeded
+ * - FATAL: 401 (auth), 403 (quota), 400 (invalid request)
  * 
  * Retry strategy:
  * - Rate limit (429): Exponential backoff with jitter, up to 3 attempts
@@ -122,30 +122,31 @@ export class KimiClient {
     // Check circuit breaker before making request
     this.checkAPIErrorRate();
 
-    // NVIDIA NIM API format
+    // Convert OpenAI-style messages to Gemini format
+    const contents = this.convertMessagesToGeminiFormat(messages);
+
+    // Gemini API format
     const requestBody = {
-      model: "moonshotai/kimi-k2.5",
-      messages: messages,
-      max_tokens: 16384,
-      temperature: 1.00,
-      top_p: 1.00,
-      stream: false,
-      chat_template_kwargs: {
-        thinking: true
+      contents: contents,
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 8192,
+        topP: 0.95
       }
     };
 
     try {
-      const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(requestBody),
-        signal
-      });
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody),
+          signal
+        }
+      );
 
       if (!response.ok) {
         const errorBody = await response.text();
@@ -155,8 +156,8 @@ export class KimiClient {
         let errorDetail = '';
         try {
           const errorJson = JSON.parse(errorBody);
-          if (errorJson.error?.code) {
-            errorDetail = ` (${errorJson.error.code})`;
+          if (errorJson.error?.message) {
+            errorDetail = ` (${errorJson.error.message})`;
           }
         } catch {}
         
@@ -174,7 +175,9 @@ export class KimiClient {
 
       const data = await response.json();
       this.apiCallCount++;
-      return data as KimiAPIResponse;
+      
+      // Convert Gemini response to OpenAI-compatible format
+      return this.convertGeminiResponseToOpenAIFormat(data);
 
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -190,6 +193,49 @@ export class KimiClient {
       this.recordAPIError();
       throw new APIError(`Network error: ${err.message}`, 0, true);
     }
+  }
+
+  /**
+   * Convert OpenAI-style messages to Gemini format.
+   * OpenAI: [{role: 'user', content: 'text'}]
+   * Gemini: [{role: 'user', parts: [{text: 'text'}]}]
+   */
+  private convertMessagesToGeminiFormat(messages: Array<{ role: string; content: string }>): any[] {
+    return messages.map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    }));
+  }
+
+  /**
+   * Convert Gemini response to OpenAI-compatible format.
+   * Gemini: {candidates: [{content: {parts: [{text}]}}]}
+   * OpenAI: {choices: [{message: {content}}]}
+   */
+  private convertGeminiResponseToOpenAIFormat(geminiResponse: any): KimiAPIResponse {
+    const candidate = geminiResponse.candidates?.[0];
+    if (!candidate) {
+      throw new APIError('No candidates in Gemini response', 0, false);
+    }
+
+    const text = candidate.content?.parts?.[0]?.text || '';
+    
+    return {
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: text
+          },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: {
+        prompt_tokens: geminiResponse.usageMetadata?.promptTokenCount || 0,
+        completion_tokens: geminiResponse.usageMetadata?.candidatesTokenCount || 0,
+        total_tokens: geminiResponse.usageMetadata?.totalTokenCount || 0
+      }
+    };
   }
 
   /**
