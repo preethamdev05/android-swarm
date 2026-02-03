@@ -1,5 +1,6 @@
 import { KimiAPIResponse, KimiAPIError } from './types.js';
-import { KIMI_API_CONFIG, RETRY_CONFIG } from './constants.js';
+import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
+import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 
 export class KimiClient {
   private apiKey: string;
@@ -32,30 +33,51 @@ export class KimiClient {
     messages: Array<{ role: string; content: string }>,
     signal: AbortSignal
   ): Promise<KimiAPIResponse> {
-    let lastError: KimiAPIError | null = null;
+    let lastError: APIError | TimeoutError | null = null;
 
     for (let attempt = 0; attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES; attempt++) {
       try {
         return await this.makeRequest(messages, signal);
       } catch (err) {
-        lastError = err as KimiAPIError;
+        if (err instanceof APIError || err instanceof TimeoutError) {
+          lastError = err;
 
-        if (!lastError.transient) {
+          if (!lastError.transient) {
+            throw lastError;
+          }
+
+          if (err instanceof APIError && err.statusCode === 429 && attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES - 1) {
+            const delay = RETRY_CONFIG.RATE_LIMIT_DELAYS_MS[attempt];
+            await this.sleep(delay);
+            continue;
+          }
+
+          if (err instanceof APIError && err.statusCode >= 500 && err.statusCode < 600 && attempt === 0) {
+            await this.sleep(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
+            continue;
+          }
+
           throw lastError;
         }
+        
+        // Legacy KimiAPIError fallback
+        const legacyError = err as KimiAPIError;
+        if (!legacyError.transient) {
+          throw err;
+        }
 
-        if (lastError.status === 429 && attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES - 1) {
+        if (legacyError.status === 429 && attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES - 1) {
           const delay = RETRY_CONFIG.RATE_LIMIT_DELAYS_MS[attempt];
           await this.sleep(delay);
           continue;
         }
 
-        if (lastError.status >= 500 && lastError.status < 600 && attempt === 0) {
+        if (legacyError.status >= 500 && legacyError.status < 600 && attempt === 0) {
           await this.sleep(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
           continue;
         }
 
-        throw lastError;
+        throw err;
       }
     }
 
@@ -87,17 +109,17 @@ export class KimiClient {
 
       if (!response.ok) {
         const errorBody = await response.text();
-        const isTransient = response.status === 429 || (response.status >= 500 && response.status < 600);
+        const classification = classifyHTTPError(response.status);
         
-        if (!isTransient || response.status >= 500) {
+        if (!classification.transient || response.status >= 500) {
           this.recordAPIError();
         }
 
-        throw {
-          status: response.status,
-          message: `API error ${response.status}: ${errorBody}`,
-          transient: isTransient
-        } as KimiAPIError;
+        throw new APIError(
+          `${classification.message}: ${errorBody}`,
+          response.status,
+          classification.transient
+        );
       }
 
       const data = await response.json();
@@ -107,34 +129,26 @@ export class KimiClient {
     } catch (err: any) {
       if (err.name === 'AbortError') {
         this.recordAPIError();
-        throw {
-          status: 0,
-          message: 'Request timeout',
-          transient: true
-        } as KimiAPIError;
+        throw new TimeoutError('API request timeout');
       }
 
-      if (err.status !== undefined) {
+      if (err instanceof APIError) {
         throw err;
       }
 
       this.recordAPIError();
-      throw {
-        status: 0,
-        message: `Network error: ${err.message}`,
-        transient: true
-      } as KimiAPIError;
+      throw new APIError(`Network error: ${err.message}`, 0, true);
     }
   }
 
   private checkAPIErrorRate(): void {
     const now = Date.now();
-    const windowStart = now - RETRY_CONFIG.API_ERROR_RATE_WINDOW_MS;
+    const windowStart = now - LIMITS.API_ERROR_RATE_WINDOW_MS;
     
     this.apiErrorTimestamps = this.apiErrorTimestamps.filter(ts => ts > windowStart);
     
-    if (this.apiErrorTimestamps.length >= RETRY_CONFIG.API_ERROR_RATE_LIMIT) {
-      throw new Error('Circuit breaker: API error rate exceeded');
+    if (this.apiErrorTimestamps.length >= LIMITS.API_ERROR_RATE_LIMIT) {
+      throw new CircuitBreakerError('API error rate exceeded');
     }
   }
 

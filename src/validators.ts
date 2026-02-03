@@ -2,13 +2,10 @@ import { TaskSpec, Step } from './types.js';
 import { LIMITS } from './constants.js';
 import { existsSync, statfsSync } from 'fs';
 import { homedir } from 'os';
+import { ValidationError } from './utils/errors.js';
 
-export class ValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ValidationError';
-  }
-}
+// Re-export ValidationError for backward compatibility
+export { ValidationError } from './utils/errors.js';
 
 export function validateTaskSpec(spec: any): TaskSpec {
   if (typeof spec !== 'object' || spec === null) {
