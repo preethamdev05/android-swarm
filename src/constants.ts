@@ -88,8 +88,8 @@ export const PATHS = {
 } as const;
 
 export const KIMI_API_CONFIG = {
-  ENDPOINT: 'https://api.moonshot.cn/v1/chat/completions',
-  MODEL: 'kimi-k2.5',
+  ENDPOINT: 'https://integrate.api.nvidia.com/v1/chat/completions',
+  MODEL: 'moonshotai/kimi-k2.5',
   // API timeout: increased for NVIDIA NIM latency, respect environment override for tuning
   TIMEOUT_MS: parseInt(process.env.SWARM_API_TIMEOUT || '120') * 1000,
   

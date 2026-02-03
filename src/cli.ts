@@ -4,6 +4,7 @@ import { ValidationError, VerificationError } from './utils/errors.js';
 import { ExitCode, getExitCodeForError } from './utils/exit-codes.js';
 import { cleanupStalePidFile } from './utils/pid.js';
 import { startUIServer } from './ui-server.js';
+import { validateTaskSpec } from './validators.js';
 
 /**
  * Command-line interface for android-swarm orchestrator.
@@ -94,6 +95,17 @@ export class CLI {
       process.exit(ExitCode.ValidationError);
     }
 
+    let validatedSpec = taskSpec;
+    try {
+      validatedSpec = validateTaskSpec(taskSpec);
+    } catch (err: any) {
+      if (err instanceof ValidationError) {
+        console.error(`\n❌ Error: ${err.message}\n`);
+        process.exit(ExitCode.ValidationError);
+      }
+      throw err;
+    }
+
     // Lazy initialization: only create orchestrator when needed for agent command
     // This allows help/abort/cleanup commands to work without KIMI_API_KEY
     try {
@@ -111,13 +123,13 @@ export class CLI {
 
     try {
       console.log('\n⚙️  Starting Android Swarm task...\n');
-      console.log('App:', taskSpec.app_name);
-      console.log('Features:', taskSpec.features.join(', '));
-      console.log('Architecture:', taskSpec.architecture);
-      console.log('UI System:', taskSpec.ui_system);
+      console.log('App:', validatedSpec.app_name);
+      console.log('Features:', validatedSpec.features.join(', '));
+      console.log('Architecture:', validatedSpec.architecture);
+      console.log('UI System:', validatedSpec.ui_system);
       console.log('');
       
-      const workspacePath = await this.orchestrator.executeTask(taskSpec);
+      const workspacePath = await this.orchestrator.executeTask(validatedSpec);
       
       console.log('\n✅ Task completed successfully!');
       console.log(`\n📁 Output: ${workspacePath}`);
