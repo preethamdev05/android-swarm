@@ -3,7 +3,7 @@ import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 
 /**
- * Kimi K2.5 API client with robust error handling and retry logic.
+ * Kimi K2.5 API client (NVIDIA NIM format) with robust error handling and retry logic.
  * 
  * Error classification:
  * - TRANSIENT: 429 (rate limit), 5xx (server errors), timeouts, network errors
@@ -122,18 +122,26 @@ export class KimiClient {
     // Check circuit breaker before making request
     this.checkAPIErrorRate();
 
+    // NVIDIA NIM API format
     const requestBody = {
-      model: KIMI_API_CONFIG.MODEL,
+      model: "moonshotai/kimi-k2.5",
       messages: messages,
-      temperature: 0.7
+      max_tokens: 16384,
+      temperature: 1.00,
+      top_p: 1.00,
+      stream: false,
+      chat_template_kwargs: {
+        thinking: true
+      }
     };
 
     try {
-      const response = await fetch(KIMI_API_CONFIG.ENDPOINT, {
+      const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Accept': 'application/json'
         },
         body: JSON.stringify(requestBody),
         signal
@@ -143,7 +151,7 @@ export class KimiClient {
         const errorBody = await response.text();
         const classification = classifyHTTPError(response.status);
         
-        // Parse error body for specific Kimi error codes
+        // Parse error body for specific error codes
         let errorDetail = '';
         try {
           const errorJson = JSON.parse(errorBody);
