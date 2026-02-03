@@ -3,7 +3,7 @@ import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 
 /**
- * Gemini API client with robust error handling and retry logic.
+ * NVIDIA NIM Kimi API client with robust error handling and retry logic.
  * 
  * Error classification:
  * - TRANSIENT: 429 (rate limit), 5xx (server errors), timeouts, network errors
@@ -122,26 +122,25 @@ export class KimiClient {
     // Check circuit breaker before making request
     this.checkAPIErrorRate();
 
-    // Convert OpenAI-style messages to Gemini format
-    const contents = this.convertMessagesToGeminiFormat(messages);
-
-    // Gemini API format
     const requestBody = {
-      contents: contents,
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 8192,
-        topP: 0.95
-      }
+      model: KIMI_API_CONFIG.MODEL,
+      messages,
+      max_tokens: 16384,
+      temperature: 1.0,
+      top_p: 1.0,
+      stream: false,
+      chat_template_kwargs: { thinking: true }
     };
 
     try {
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.apiKey}`,
+        KIMI_API_CONFIG.ENDPOINT,
         {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`
           },
           body: JSON.stringify(requestBody),
           signal
@@ -175,9 +174,7 @@ export class KimiClient {
 
       const data = await response.json();
       this.apiCallCount++;
-      
-      // Convert Gemini response to OpenAI-compatible format
-      return this.convertGeminiResponseToOpenAIFormat(data);
+      return data as KimiAPIResponse;
 
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -193,49 +190,6 @@ export class KimiClient {
       this.recordAPIError();
       throw new APIError(`Network error: ${err.message}`, 0, true);
     }
-  }
-
-  /**
-   * Convert OpenAI-style messages to Gemini format.
-   * OpenAI: [{role: 'user', content: 'text'}]
-   * Gemini: [{role: 'user', parts: [{text: 'text'}]}]
-   */
-  private convertMessagesToGeminiFormat(messages: Array<{ role: string; content: string }>): any[] {
-    return messages.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    }));
-  }
-
-  /**
-   * Convert Gemini response to OpenAI-compatible format.
-   * Gemini: {candidates: [{content: {parts: [{text}]}}]}
-   * OpenAI: {choices: [{message: {content}}]}
-   */
-  private convertGeminiResponseToOpenAIFormat(geminiResponse: any): KimiAPIResponse {
-    const candidate = geminiResponse.candidates?.[0];
-    if (!candidate) {
-      throw new APIError('No candidates in Gemini response', 0, false);
-    }
-
-    const text = candidate.content?.parts?.[0]?.text || '';
-    
-    return {
-      choices: [
-        {
-          message: {
-            role: 'assistant',
-            content: text
-          },
-          finish_reason: 'stop'
-        }
-      ],
-      usage: {
-        prompt_tokens: geminiResponse.usageMetadata?.promptTokenCount || 0,
-        completion_tokens: geminiResponse.usageMetadata?.candidatesTokenCount || 0,
-        total_tokens: geminiResponse.usageMetadata?.totalTokenCount || 0
-      }
-    };
   }
 
   /**

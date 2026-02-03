@@ -1,6 +1,6 @@
 # Android Swarm
 
-Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Google Gemini API integration.
+Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with NVIDIA NIM Kimi API integration.
 
 ## System Overview
 
@@ -37,10 +37,8 @@ This system generates complete Android applications using a multi-agent architec
 
 ### API Access
 
-- **Google Gemini API key** (set as `KIMI_API_KEY` environment variable)
-- Get your free API key: https://aistudio.google.com/app/apikey
-
-**Note**: The environment variable name `KIMI_API_KEY` is preserved for backward compatibility, but this system uses **Google Gemini API**, not Moonshot/Kimi API. Ensure you obtain a Gemini API key from Google AI Studio.
+- **NVIDIA NIM API key** (set as `KIMI_API_KEY` environment variable)
+- Get your API key from the NVIDIA API portal.
 
 ## Installation
 
@@ -59,8 +57,8 @@ npm run build
 ### 3. Set Environment Variables
 
 ```bash
-# Set your Google Gemini API key
-export KIMI_API_KEY="AIzaSy..."  # Note: Expects Gemini API key despite variable name
+# Set your NVIDIA NIM API key
+export KIMI_API_KEY="nvapi-..."  # NVIDIA NIM API key
 ```
 
 Optional variables:
@@ -273,15 +271,15 @@ Tables:
 
 ### "KIMI_API_KEY environment variable is required"
 
-Set the **Gemini API key** (environment variable name is `KIMI_API_KEY` for compatibility):
+Set the **NVIDIA NIM API key** (environment variable name is `KIMI_API_KEY` for compatibility):
 
 ```bash
-export KIMI_API_KEY="AIzaSy..."
+export KIMI_API_KEY="nvapi-..."
 ```
 
-Get your free API key from: https://aistudio.google.com/app/apikey
+Get your API key from the NVIDIA API portal.
 
-**Important**: This system uses Google Gemini API. Ensure you obtain a Gemini API key, not Moonshot/Kimi API key.
+**Important**: This system uses NVIDIA NIM's Kimi endpoint. Ensure you obtain an NVIDIA API key.
 
 ### "Another task is running"
 
@@ -313,10 +311,7 @@ Task took longer than 90 minutes. Review task complexity.
 
 ### "Quota exceeded" or "Rate limit"
 
-Gemini free tier limits:
-- 15 requests per minute
-- 1 million tokens per minute
-- 1,500 requests per day
+NVIDIA NIM rate limits vary by account tier. Check your NVIDIA API plan for request and token limits.
 
 Wait a few minutes and retry, or upgrade to paid tier.
 
@@ -342,7 +337,7 @@ src/
     verifier.ts     # Project validation
   orchestrator.ts   # Task coordination
   state-manager.ts  # SQLite and filesystem
-  kimi-client.ts    # Gemini API client
+  kimi-client.ts    # NVIDIA NIM Kimi API client
   validators.ts     # Input validation
   coding-profile.ts # Kotlin/Android standards
   logger.ts         # Logging utility
@@ -367,13 +362,25 @@ npm run dev  # Watch mode
 
 ## API Integration
 
-This system uses **Google Gemini API**:
+This system uses **NVIDIA NIM Kimi API**:
 
-- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent`
-- **Model**: `gemini-1.5-pro` (128k context window)
-- **Authentication**: API key in URL query parameter
+- **Endpoint**: `https://integrate.api.nvidia.com/v1/chat/completions`
+- **Model**: `moonshotai/kimi-k2.5` (256k context window)
+- **Authentication**: `Authorization: Bearer <api-key>`
 - **Default Timeout**: 120 seconds
-- **Free Tier**: 15 RPM, 1M TPM, 1,500 requests/day
+
+**Request Format** (non-streaming):
+```json
+{
+  "model": "moonshotai/kimi-k2.5",
+  "messages": [{"role": "user", "content": "..."}],
+  "max_tokens": 16384,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "stream": false,
+  "chat_template_kwargs": {"thinking": true}
+}
+```
 
 **Token Usage Tracking**: The system extracts token usage from API responses:
 ```typescript
