@@ -11,7 +11,7 @@ export const LIMITS = {
   MAX_PLAN_STEPS: 25,
   MAX_FILE_SIZE_BYTES: 50 * 1024, // 50KB per file
   MAX_WORKSPACE_SIZE_BYTES: 1024 * 1024 * 1024, // 1GB per task workspace
-  API_TIMEOUT_MS: 120 * 1000, // 120 seconds (increased for NVIDIA NIM latency)
+  API_TIMEOUT_MS: 120 * 1000, // 120 seconds
   MAX_SUSTAINED_MEMORY_MB: 500,
   MIN_DISK_SPACE_MB: 100,
   CONSECUTIVE_FAILURE_LIMIT: 3,
@@ -97,16 +97,43 @@ export const PATHS = {
   }
 } as const;
 
-export const KIMI_API_CONFIG = {
-  ENDPOINT: 'https://integrate.api.nvidia.com/v1/chat/completions',
-  MODEL: 'moonshotai/kimi-k2.5',
-  // API timeout: increased for NVIDIA NIM latency, respect environment override for tuning
+/**
+ * Google Gemini API configuration.
+ * 
+ * Model selection:
+ * - gemini-1.5-pro: Best quality, 2M context window (default)
+ * - gemini-1.5-flash: Faster, cheaper, 1M context
+ * - gemini-1.5-flash-8b: Fastest, cheapest, 1M context
+ * 
+ * Override via LLM_MODEL environment variable:
+ *   export LLM_MODEL=gemini-1.5-flash-8b
+ */
+export const LLM_CONFIG = {
+  // Primary model (configurable via env var)
+  MODEL: process.env.LLM_MODEL || 'gemini-1.5-pro',
+  
+  // Fallback model for cost optimization or API issues
+  FALLBACK_MODEL: 'gemini-1.5-flash-8b',
+  
+  // Gemini API endpoint
+  ENDPOINT: 'https://generativelanguage.googleapis.com/v1beta/models',
+  
+  // API timeout: configurable via SWARM_API_TIMEOUT env var (seconds)
   TIMEOUT_MS: parseInt(process.env.SWARM_API_TIMEOUT || '120') * 1000,
   
-  // Kimi K2.5 specifications (for reference)
-  // Max input tokens: 256K (context window)
-  // Max output tokens: 8,192
-  // Agent swarm capability: up to 100 sub-agents, 1,500 tool calls
-  // Connection timeout: 30s
-  // Read timeout: 600s (10 min) - NVIDIA NIM may have higher latency
+  // Gemini 1.5 Pro specifications:
+  // - Max input tokens: 2,097,152 (2M context window)
+  // - Max output tokens: 8,192
+  // - Rate limits (free tier): 15 RPM, 1M TPD
+  // - Rate limits (paid tier): varies by plan
+} as const;
+
+/**
+ * @deprecated Use LLM_CONFIG instead. Kept for backward compatibility.
+ * This will be removed in next major version.
+ */
+export const KIMI_API_CONFIG = {
+  ENDPOINT: LLM_CONFIG.ENDPOINT,
+  MODEL: LLM_CONFIG.MODEL,
+  TIMEOUT_MS: LLM_CONFIG.TIMEOUT_MS,
 } as const;

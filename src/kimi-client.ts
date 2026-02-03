@@ -1,10 +1,10 @@
 import { KimiAPIResponse, KimiAPIError } from './types.js';
-import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS, RATE_LIMITER } from './constants.js';
+import { LLM_CONFIG, RETRY_CONFIG, LIMITS, RATE_LIMITER } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 import { RateLimiter } from './utils/rate-limiter.js';
 
 /**
- * NVIDIA NIM Kimi API client with robust error handling and retry logic.
+ * Google Gemini API client with robust error handling and retry logic.
  * 
  * Error classification:
  * - TRANSIENT: 429 (rate limit), 5xx (server errors), timeouts, network errors
@@ -38,7 +38,7 @@ export class KimiClient {
     agent: 'planner' | 'coder' | 'critic' | 'verifier'
   ): Promise<KimiAPIResponse> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), KIMI_API_CONFIG.TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), LLM_CONFIG.TIMEOUT_MS);
 
     try {
       await this.rateLimiter.acquire();
@@ -131,24 +131,28 @@ export class KimiClient {
     this.checkAPIErrorRate();
 
     const requestBody = {
-      model: KIMI_API_CONFIG.MODEL,
+      model: LLM_CONFIG.MODEL,
       messages,
       max_tokens: 16384,
       temperature: 1.0,
       top_p: 1.0,
       stream: false,
+      // Gemini-specific: thinking mode for reasoning tasks
       chat_template_kwargs: { thinking: true }
     };
 
     try {
+      // Construct full endpoint URL with model
+      const endpoint = `${LLM_CONFIG.ENDPOINT}/${LLM_CONFIG.MODEL}:generateContent`;
+      
       const response = await fetch(
-        KIMI_API_CONFIG.ENDPOINT,
+        endpoint,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'Authorization': `Bearer ${this.apiKey}`
+            'x-goog-api-key': this.apiKey
           },
           body: JSON.stringify(requestBody),
           signal
