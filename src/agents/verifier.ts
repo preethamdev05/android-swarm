@@ -4,10 +4,13 @@ import { TaskSpec, VerifierOutput } from '../types.js';
 export class VerifierAgent {
   constructor(private kimiClient: KimiClient) {}
 
+  /**
+   * CORRECTIVE FIX: Updated to return {report, usage} for token accounting.
+   */
   async verifyProject(
     files: string[],
     taskSpec: TaskSpec
-  ): Promise<VerifierOutput> {
+  ): Promise<{ report: VerifierOutput; usage: { prompt_tokens: number; completion_tokens: number } }> {
     const prompt = this.buildPrompt(files, taskSpec);
     
     const messages = [
@@ -24,16 +27,21 @@ export class VerifierAgent {
     try {
       const response = await this.kimiClient.chat(messages, 'verifier');
       const content = response.choices[0].message.content;
+      const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0 };
 
       let result: any;
       try {
         result = JSON.parse(content);
       } catch (err) {
         console.warn(`Verifier failed to parse JSON: ${err}`);
+        // CORRECTIVE FIX: Include usage on parse failure
         return {
-          warnings: ['Verifier failed to parse response'],
-          missing_items: [],
-          quality_score: 0.5
+          report: {
+            warnings: ['Verifier failed to parse response'],
+            missing_items: [],
+            quality_score: 0.5
+          },
+          usage
         };
       }
 
@@ -47,14 +55,22 @@ export class VerifierAgent {
         result.quality_score = 0.5;
       }
 
-      return result as VerifierOutput;
+      // CORRECTIVE FIX: Return both report and usage
+      return {
+        report: result as VerifierOutput,
+        usage
+      };
 
     } catch (err) {
       console.warn(`Verifier agent failed: ${err}`);
+      // CORRECTIVE FIX: Fallback with zero usage on total failure
       return {
-        warnings: [`Verifier agent error: ${err}`],
-        missing_items: [],
-        quality_score: 0.5
+        report: {
+          warnings: [`Verifier agent error: ${err}`],
+          missing_items: [],
+          quality_score: 0.5
+        },
+        usage: { prompt_tokens: 0, completion_tokens: 0 }
       };
     }
   }
