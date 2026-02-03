@@ -3,7 +3,7 @@ import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 
 /**
- * Kimi K2.5 API client (NVIDIA NIM format) with robust error handling and retry logic.
+ * Kimi/Moonshot API client with robust error handling and retry logic.
  * 
  * Error classification:
  * - TRANSIENT: 429 (rate limit), 5xx (server errors), timeouts, network errors
@@ -122,26 +122,19 @@ export class KimiClient {
     // Check circuit breaker before making request
     this.checkAPIErrorRate();
 
-    // NVIDIA NIM API format
+    // Moonshot API format (direct, no NVIDIA wrapper)
     const requestBody = {
-      model: "moonshotai/kimi-k2.5",
+      model: "moonshot-v1-128k",
       messages: messages,
-      max_tokens: 16384,
-      temperature: 1.00,
-      top_p: 1.00,
-      stream: false,
-      chat_template_kwargs: {
-        thinking: true
-      }
+      temperature: 0.7
     };
 
     try {
-      const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      const response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Accept': 'application/json'
+          'Authorization': `Bearer ${this.apiKey}`
         },
         body: JSON.stringify(requestBody),
         signal
