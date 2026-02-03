@@ -25,6 +25,13 @@ test('rejects app_name with surrounding whitespace', () => {
   );
 });
 
+test('rejects app_name with path traversal sequences', () => {
+  assert.throws(
+    () => validateTaskSpec({ ...baseSpec, app_name: '../../etc/passwd' }),
+    /app_name must not include path traversal sequences/
+  );
+});
+
 test('rejects feature names with surrounding whitespace', () => {
   assert.throws(
     () => validateTaskSpec({ ...baseSpec, features: ['login', ' list_items'] }),

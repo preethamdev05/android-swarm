@@ -82,6 +82,7 @@ export class StateManager {
       CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
       CREATE INDEX IF NOT EXISTS idx_steps_task ON steps(task_id);
       CREATE INDEX IF NOT EXISTS idx_api_calls_task ON api_calls(task_id);
+      CREATE INDEX IF NOT EXISTS idx_api_calls_timestamp ON api_calls(timestamp);
     `);
   }
 
