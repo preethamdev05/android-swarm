@@ -7,6 +7,7 @@ import { CoderAgent } from './agents/coder.js';
 import { CriticAgent } from './agents/critic.js';
 import { VerifierAgent } from './agents/verifier.js';
 import { validateTaskSpec, validatePlan, checkDiskSpace, ValidationError } from './validators.js';
+import { LimitExceededError, CircuitBreakerError } from './utils/errors.js';
 import { LIMITS, PATHS } from './constants.js';
 import { logger } from './logger.js';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
@@ -298,22 +299,22 @@ export class Orchestrator {
 
     const elapsed = Date.now() - this.state.start_time;
     if (elapsed > LIMITS.WALL_CLOCK_TIMEOUT_MS) {
-      throw new Error('Wall-clock timeout');
+      throw new LimitExceededError('Wall-clock timeout', 'wall_clock_time');
     }
 
     const task = this.stateManager.getTask(this.state.task_id);
     if (task.api_call_count >= LIMITS.MAX_API_CALLS) {
-      throw new Error('API call limit exceeded');
+      throw new LimitExceededError('API call limit exceeded', 'api_calls');
     }
 
     if (task.total_tokens >= LIMITS.MAX_TOTAL_TOKENS) {
-      throw new Error('Token limit exceeded');
+      throw new LimitExceededError('Token limit exceeded', 'tokens');
     }
   }
 
   private checkCircuitBreaker(): void {
     if (this.consecutiveFailures >= LIMITS.CONSECUTIVE_FAILURE_LIMIT) {
-      throw new Error('Circuit breaker: consecutive failures');
+      throw new CircuitBreakerError('Consecutive failures threshold reached');
     }
   }
 
