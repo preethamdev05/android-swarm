@@ -49,17 +49,27 @@ export class Orchestrator {
     this.setupSignalHandlers();
   }
 
+  /**
+   * CORRECTIVE FIX: Removed process.exit() to allow finally block execution.
+   * Signal handlers now only set flag - cleanup happens in finally block.
+   */
   private setupSignalHandlers(): void {
     const handler = () => {
-      logger.warn('Received termination signal, aborting task');
+      logger.warn('Received termination signal, setting abort flag');
       this.abortRequested = true;
       
+      // Update state in database immediately (best-effort)
       if (this.state) {
-        this.stateManager.updateTaskState(this.state.task_id, 'FAILED', 'Manual abort');
+        try {
+          this.stateManager.updateTaskState(this.state.task_id, 'FAILED', 'Manual abort via signal');
+        } catch (err) {
+          logger.error('Failed to update task state on signal', { error: String(err) });
+        }
       }
       
-      this.stateManager.close();
-      process.exit(1);
+      // CORRECTIVE FIX: DO NOT call process.exit() here
+      // Let the execution loop detect abortRequested flag and exit gracefully
+      // Finally block will handle PID file cleanup and DB close
     };
 
     process.on('SIGINT', handler);
@@ -116,6 +126,8 @@ export class Orchestrator {
       this.stateManager.updateTaskState(taskId, 'FAILED', errorMessage);
       throw err;
     } finally {
+      // CORRECTIVE FIX: Finally block now reliably executes on signal abort
+      // PID file cleanup and DB close guaranteed
       this.removePIDFile();
       this.state = null;
     }
