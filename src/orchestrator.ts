@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { TaskSpec, Step, OrchestratorState, StepState, CriticIssue } from './types.js';
+import { TaskSpec, Step, OrchestratorState, StepState, CriticIssue, VerifierOutput } from './types.js';
 import { KimiClient } from './kimi-client.js';
 import { StateManager } from './state-manager.js';
 import { PlannerAgent } from './agents/planner.js';
@@ -7,10 +7,11 @@ import { CoderAgent } from './agents/coder.js';
 import { CriticAgent } from './agents/critic.js';
 import { VerifierAgent } from './agents/verifier.js';
 import { validateTaskSpec, validatePlan, checkDiskSpace, ValidationError } from './validators.js';
-import { LimitExceededError, CircuitBreakerError, APIError, TimeoutError, isTransientError } from './utils/errors.js';
+import { LimitExceededError, CircuitBreakerError, VerificationError, isTransientError } from './utils/errors.js';
 import { LIMITS, PATHS } from './constants.js';
 import { logger } from './logger.js';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
+import { ensureNoActivePid } from './utils/pid.js';
 
 /**
  * Task orchestrator managing multi-agent workflow.
@@ -32,8 +33,10 @@ export class Orchestrator {
   private consecutiveFailures: number = 0;
   private consecutiveCriticRejections: number = 0;
   private abortRequested: boolean = false;
+  private strictVerification: boolean = false;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
 
-  constructor() {
+  constructor(options?: { strictVerification?: boolean }) {
     const apiKey = process.env.KIMI_API_KEY;
     if (!apiKey) {
       throw new Error('KIMI_API_KEY environment variable is required');
@@ -45,6 +48,7 @@ export class Orchestrator {
     this.coderAgent = new CoderAgent(this.kimiClient);
     this.criticAgent = new CriticAgent(this.kimiClient);
     this.verifierAgent = new VerifierAgent(this.kimiClient);
+    this.strictVerification = options?.strictVerification ?? false;
 
     this.setupSignalHandlers();
   }
@@ -109,13 +113,28 @@ export class Orchestrator {
 
     this.stateManager.createTask(taskId, taskSpec);
     this.createPIDFile();
+    this.startHeartbeat(taskId);
 
     try {
       await this.runPlanningPhase();
       await this.runExecutionPhase();
-      await this.runVerificationPhase();
-      
-      this.stateManager.updateTaskState(taskId, 'COMPLETED');
+      const verificationReport = await this.runVerificationPhase();
+
+      if (verificationReport && verificationReport.quality_score < 0.5) {
+        if (this.strictVerification) {
+          throw new VerificationError(
+            `Verification failed: quality_score ${verificationReport.quality_score} below threshold 0.5`
+          );
+        }
+
+        logger.warn('Verification quality below threshold; marking completed with warnings', {
+          task_id: taskId,
+          quality_score: verificationReport.quality_score
+        });
+        this.stateManager.updateTaskState(taskId, 'COMPLETED_WITH_WARNINGS');
+      } else {
+        this.stateManager.updateTaskState(taskId, 'COMPLETED');
+      }
       
       // ENHANCEMENT: Log final timing metrics
       const totalDuration = Date.now() - this.state.start_time;
@@ -135,6 +154,7 @@ export class Orchestrator {
     } finally {
       // CORRECTIVE FIX: Finally block now reliably executes on signal abort
       // PID file cleanup and DB close guaranteed
+      this.stopHeartbeat();
       this.removePIDFile();
       this.state = null;
     }
@@ -296,11 +316,13 @@ export class Orchestrator {
         }
       }
 
+      const coderOutput = stepState.coder_output!;
+
       // Critic phase
       let criticResponse: any;
       criticResponse = await this.criticAgent.reviewFile(
         step.file_path,
-        stepState.coder_output,
+        coderOutput,
         step,
         this.state.task_spec
       );
@@ -316,7 +338,7 @@ export class Orchestrator {
         step.step_number,
         step.file_path,
         stepState.attempt,
-        stepState.coder_output,
+        coderOutput,
         stepState.critic_decision,
         stepState.critic_issues
       );
@@ -325,7 +347,7 @@ export class Orchestrator {
         this.stateManager.writeFile(
           this.state.task_id,
           step.file_path,
-          stepState.coder_output
+          coderOutput
         );
         this.state.completed_files.push(step.file_path);
         
@@ -355,7 +377,7 @@ export class Orchestrator {
     }
   }
 
-  private async runVerificationPhase(): Promise<void> {
+  private async runVerificationPhase(): Promise<VerifierOutput | null> {
     if (!this.state) throw new Error('State not initialized');
 
     // ENHANCEMENT: Track phase start time
@@ -395,9 +417,12 @@ export class Orchestrator {
         logger.warn('Low quality score', { quality_score: report.quality_score });
       }
 
+      return report;
+
     } catch (err) {
       logger.warn('Verification failed', { error: String(err) });
       // Non-fatal: continue to completion
+      return null;
     }
   }
 
@@ -464,10 +489,7 @@ export class Orchestrator {
   }
 
   private checkPIDFile(): void {
-    if (existsSync(PATHS.PID_FILE)) {
-      const pid = parseInt(require('fs').readFileSync(PATHS.PID_FILE, 'utf8'));
-      throw new Error(`Another task is running (PID ${pid})`);
-    }
+    ensureNoActivePid(PATHS.PID_FILE);
   }
 
   private createPIDFile(): void {
@@ -477,6 +499,33 @@ export class Orchestrator {
   private removePIDFile(): void {
     if (existsSync(PATHS.PID_FILE)) {
       unlinkSync(PATHS.PID_FILE);
+    }
+  }
+
+  private startHeartbeat(taskId: string): void {
+    const writeHeartbeat = () => {
+      try {
+        writeFileSync(
+          PATHS.HEARTBEAT_FILE,
+          JSON.stringify({
+            task_id: taskId,
+            timestamp: new Date().toISOString()
+          }),
+          'utf8'
+        );
+      } catch (err) {
+        logger.warn('Failed to write heartbeat', { error: String(err) });
+      }
+    };
+
+    writeHeartbeat();
+    this.heartbeatInterval = setInterval(writeHeartbeat, 30_000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
     }
   }
 

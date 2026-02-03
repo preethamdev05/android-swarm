@@ -129,7 +129,7 @@ export class StateManager {
   updateTaskState(taskId: string, state: TaskState, errorMessage?: string): void {
     const updates: any = { state };
     
-    if (state === 'COMPLETED' || state === 'FAILED') {
+    if (state === 'COMPLETED' || state === 'COMPLETED_WITH_WARNINGS' || state === 'FAILED') {
       updates.end_time = Date.now();
     }
     
@@ -209,6 +209,33 @@ export class StateManager {
       task_spec: JSON.parse(row.task_spec as string),
       plan: row.plan ? JSON.parse(row.plan as string) : null
     };
+  }
+
+  getLatestTask(): any {
+    const stmt = this.db.prepare('SELECT * FROM tasks ORDER BY start_time DESC LIMIT 1');
+    const row = stmt.get() as any;
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      task_spec: JSON.parse(row.task_spec as string),
+      plan: row.plan ? JSON.parse(row.plan as string) : null
+    };
+  }
+
+  getAcceptedStepCount(taskId: string): number {
+    const stmt = this.db.prepare(
+      'SELECT COUNT(*) as count FROM steps WHERE task_id = ? AND critic_decision = ?'
+    );
+    const row = stmt.get(taskId, 'ACCEPT') as { count: number };
+    return row?.count ?? 0;
+  }
+
+  getLatestStepNumber(taskId: string): number | null {
+    const stmt = this.db.prepare('SELECT MAX(step_number) as max_step FROM steps WHERE task_id = ?');
+    const row = stmt.get(taskId) as { max_step: number | null };
+    return row?.max_step ?? null;
   }
 
   /**

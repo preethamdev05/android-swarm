@@ -79,6 +79,9 @@ export const PATHS = {
   get PID_FILE() {
     return this.OPENCLAW_ROOT + '/swarm.pid';
   },
+  get HEARTBEAT_FILE() {
+    return this.OPENCLAW_ROOT + '/.heartbeat';
+  },
   get EMERGENCY_STOP_FILE() {
     return this.WORKSPACE_ROOT + '/EMERGENCY_STOP';
   }

@@ -79,6 +79,12 @@ export SWARM_WORKSPACE_ROOT=~/.openclaw/workspace/android-swarm
 node dist/index.js agent --message 'build app: {"app_name":"MyApp","features":["login","list","detail"],"architecture":"MVVM","ui_system":"Compose","min_sdk":24,"target_sdk":34,"gradle_version":"8.2.0","kotlin_version":"1.9.20"}'
 ```
 
+Strict verification mode (fails the task if verification quality < 0.5):
+
+```bash
+node dist/index.js agent --strict-verification --message 'build app: {"app_name":"MyApp","features":["login","list","detail"],"architecture":"MVVM","ui_system":"Compose","min_sdk":24,"target_sdk":34,"gradle_version":"8.2.0","kotlin_version":"1.9.20"}'
+```
+
 ### Task Specification
 
 Required fields:
@@ -117,6 +123,16 @@ node dist/index.js abort --task-id <task_id>
 ```bash
 node dist/index.js cleanup --older-than 7d --failed-only
 ```
+
+### Local Read-Only UI
+
+Start the local monitoring UI (read-only, polling, no agent execution):
+
+```bash
+node dist/index.js ui --port 4317
+```
+
+Then open: `http://127.0.0.1:4317`
 
 ## Output
 
@@ -198,6 +214,12 @@ Graceful shutdown on SIGINT/SIGTERM:
 - Database connection closed properly
 - Task state marked as FAILED
 - Finally blocks execute reliably
+
+## Termux Notes & Limitations
+
+- The UI binds only to `127.0.0.1` for local access.
+- Keep the Termux/proot session active while running the UI or agent.
+- The UI is read-only (status, logs, files, progress, heartbeat) and uses polling only.
 
 ## Progress and Observability
 

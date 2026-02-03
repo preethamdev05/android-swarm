@@ -35,7 +35,7 @@ export interface VerifierOutput {
   quality_score: number;
 }
 
-export type TaskState = 'PLANNING' | 'EXECUTING' | 'VERIFYING' | 'COMPLETED' | 'FAILED';
+export type TaskState = 'PLANNING' | 'EXECUTING' | 'VERIFYING' | 'COMPLETED' | 'COMPLETED_WITH_WARNINGS' | 'FAILED';
 
 export interface OrchestratorState {
   task_id: string;
@@ -62,11 +62,14 @@ export interface KimiAPIResponse {
   choices: Array<{
     message: {
       content: string;
+      role?: string;
     };
+    finish_reason?: string;
   }>;
   usage: {
     prompt_tokens: number;
     completion_tokens: number;
+    total_tokens?: number;
   };
 }
 
