@@ -1,5 +1,5 @@
 import express, { type Request, type Response } from 'express';
-import { PATHS } from './constants.js';
+import { PATHS, LLM_CONFIG } from './constants.js';
 import { StateManager } from './state-manager.js';
 import { inspectPidFile } from './utils/pid.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
@@ -298,6 +298,30 @@ function readLogTail(maxLines: number): string {
   return lines.slice(-maxLines).join('\\n');
 }
 
+/**
+ * Checks Google Gemini API connectivity by listing available models.
+ * Lightweight endpoint that verifies auth without consuming generation tokens.
+ */
+async function checkGeminiAPIConnectivity(apiKey: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${LLM_CONFIG.ENDPOINT}?key=${apiKey}`,
+      {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        signal: AbortSignal.timeout(5000) // 5s timeout for health check
+      }
+    );
+
+    return response.ok;
+  } catch (err) {
+    logger.warn('Health check: Gemini API connectivity failed', { error: String(err) });
+    return false;
+  }
+}
+
 export function startUIServer(options: UIServerOptions): UIServerHandle {
   const app = express();
   const stateManager = new StateManager();
@@ -309,6 +333,57 @@ export function startUIServer(options: UIServerOptions): UIServerHandle {
 
   app.get('/app.js', (_req: Request, res: Response) => {
     res.type('application/javascript').send(APP_JS);
+  });
+
+  /**
+   * Health check endpoint for pre-flight validation.
+   * 
+   * Verifies:
+   * - API key presence
+   * - Gemini API connectivity (lightweight model list request)
+   * - Database connection
+   * 
+   * Returns:
+   * - 200: healthy (all systems operational)
+   * - 503: degraded or error (API key missing, connectivity issues, DB down)
+   */
+  app.get('/health', async (_req: Request, res: Response) => {
+    const apiKey = process.env.KIMI_API_KEY;
+    
+    // Check 1: API key presence
+    if (!apiKey) {
+      res.status(503).json({
+        status: 'error',
+        message: 'API key not configured',
+        api_connected: false,
+        db_connected: false,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Check 2: Gemini API connectivity
+    const apiConnected = await checkGeminiAPIConnectivity(apiKey);
+
+    // Check 3: Database connection (simple check via getLatestTask)
+    let dbConnected = false;
+    try {
+      stateManager.getLatestTask();
+      dbConnected = true;
+    } catch (err) {
+      logger.warn('Health check: Database connectivity failed', { error: String(err) });
+    }
+
+    const status = apiConnected && dbConnected ? 'healthy' : 'degraded';
+    const httpStatus = status === 'healthy' ? 200 : 503;
+
+    res.status(httpStatus).json({
+      status,
+      api_connected: apiConnected,
+      db_connected: dbConnected,
+      model: LLM_CONFIG.MODEL,
+      timestamp: new Date().toISOString()
+    });
   });
 
   app.get('/api/status', (_req: Request, res: Response) => {
@@ -396,6 +471,7 @@ export function startUIServer(options: UIServerOptions): UIServerHandle {
 
   const server = app.listen(options.port, host, () => {
     logger.info('UI server listening', { host, port: options.port });
+    logger.info('Health check endpoint available at /health');
   });
 
   return {
