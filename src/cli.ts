@@ -244,12 +244,12 @@ export class CLI {
       ? Number.parseInt(portValue, 10)
       : portEnv
         ? Number.parseInt(portEnv, 10)
-        : 4317;
+        : 8080;
 
     if (Number.isNaN(port) || port <= 0) {
       console.error('\n❌ Error: Invalid --port value\n');
       console.error('Usage:');
-      console.error('  node dist/index.js ui --port 4317\n');
+      console.error('  node dist/index.js ui --port 8080\n');
       process.exit(ExitCode.ValidationError);
     }
 
@@ -278,7 +278,7 @@ export class CLI {
     node dist/index.js cleanup --older-than 7d [--failed-only]
 
   Local read-only UI:
-    node dist/index.js ui --port 4317
+    node dist/index.js ui --port 8080
 
 📝 Examples:
 
@@ -297,7 +297,7 @@ export class CLI {
   SWARM_DEBUG              Enable debug logging (1 or 0, default: 0)
   SWARM_API_TIMEOUT        API timeout in seconds (default: 30)
   SWARM_WORKSPACE_ROOT     Workspace directory (default: ~/.openclaw/workspace/android-swarm)
-  SWARM_UI_PORT            Local UI port (default: 4317)
+  SWARM_UI_PORT            Local UI port (default: 8080)
 
 📄 Output:
 

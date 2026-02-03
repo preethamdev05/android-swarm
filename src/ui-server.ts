@@ -386,7 +386,6 @@ export function startUIServer(options: UIServerOptions): UIServerHandle {
       const timestamp = data.timestamp;
       const ageSeconds = timestamp ? Math.floor((Date.now() - Date.parse(timestamp)) / 1000) : null;
       res.json({
-        task_id: data.task_id,
         timestamp,
         age_seconds: ageSeconds
       });

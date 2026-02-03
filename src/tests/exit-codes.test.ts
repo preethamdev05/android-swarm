@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ExitCode, getExitCodeForError } from '../utils/exit-codes.js';
-import { APIError, LimitExceededError, TimeoutError, ValidationError, VerificationError } from '../utils/errors.js';
+import { APIError, CircuitBreakerError, LimitExceededError, TimeoutError, ValidationError, VerificationError } from '../utils/errors.js';
 
 test('maps validation errors to exit code 1', () => {
   const err = new ValidationError('bad input');
@@ -20,6 +20,16 @@ test('maps timeouts to exit code 2', () => {
 
 test('maps token limit exceeded to exit code 2', () => {
   const err = new LimitExceededError('Token limit exceeded', 'tokens');
+  assert.equal(getExitCodeForError(err), ExitCode.ApiOrTimeoutError);
+});
+
+test('maps api call limit exceeded to exit code 2', () => {
+  const err = new LimitExceededError('API call limit exceeded', 'api_calls');
+  assert.equal(getExitCodeForError(err), ExitCode.ApiOrTimeoutError);
+});
+
+test('maps circuit breaker errors to exit code 2', () => {
+  const err = new CircuitBreakerError('circuit breaker');
   assert.equal(getExitCodeForError(err), ExitCode.ApiOrTimeoutError);
 });
 

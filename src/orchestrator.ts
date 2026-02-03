@@ -34,7 +34,7 @@ export class Orchestrator {
   private consecutiveCriticRejections: number = 0;
   private abortRequested: boolean = false;
   private strictVerification: boolean = false;
-  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private lastHeartbeatWrite: number = 0;
 
   constructor(options?: { strictVerification?: boolean }) {
     const apiKey = process.env.KIMI_API_KEY;
@@ -113,7 +113,7 @@ export class Orchestrator {
 
     this.stateManager.createTask(taskId, taskSpec);
     this.createPIDFile();
-    this.startHeartbeat(taskId);
+    this.writeHeartbeat(true);
 
     try {
       await this.runPlanningPhase();
@@ -154,7 +154,6 @@ export class Orchestrator {
     } finally {
       // CORRECTIVE FIX: Finally block now reliably executes on signal abort
       // PID file cleanup and DB close guaranteed
-      this.stopHeartbeat();
       this.removePIDFile();
       this.state = null;
     }
@@ -167,6 +166,7 @@ export class Orchestrator {
     const phaseStartTime = Date.now();
     logger.info('Starting planning phase', { task_id: this.state.task_id });
     this.checkLimits();
+    this.writeHeartbeatIfNeeded();
 
     let plan: Step[];
     let response: any;
@@ -234,6 +234,7 @@ export class Orchestrator {
       // ENHANCEMENT: Track step timing
       const stepStartTime = Date.now();
       await this.executeStep(step);
+      this.writeHeartbeatIfNeeded();
       const stepDuration = Date.now() - stepStartTime;
       
       // ENHANCEMENT: Log step completion with timing
@@ -280,6 +281,8 @@ export class Orchestrator {
         throw new Error('Abort requested');
       }
 
+      this.writeHeartbeatIfNeeded();
+
       // Coder phase
       let coderResponse: any;
       try {
@@ -293,6 +296,7 @@ export class Orchestrator {
         
         const usage = coderResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
         this.recordAPICall('coder', usage.prompt_tokens, usage.completion_tokens);
+        this.writeHeartbeatIfNeeded();
       } catch (err) {
         const isTransient = isTransientError(err);
         
@@ -329,6 +333,7 @@ export class Orchestrator {
       
       const criticUsage = criticResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
       this.recordAPICall('critic', criticUsage.prompt_tokens, criticUsage.completion_tokens);
+      this.writeHeartbeatIfNeeded();
 
       stepState.critic_decision = criticResponse.decision;
       stepState.critic_issues = criticResponse.issues;
@@ -387,6 +392,7 @@ export class Orchestrator {
     this.state.state = 'VERIFYING';
 
     const files = this.stateManager.getAllFiles(this.state.task_id);
+    this.writeHeartbeatIfNeeded();
     
     try {
       const verifierResponse = await this.verifierAgent.verifyProject(files, this.state.task_spec);
@@ -394,6 +400,7 @@ export class Orchestrator {
       
       const usage = verifierResponse.usage || { prompt_tokens: 0, completion_tokens: 0 };
       this.recordAPICall('verifier', usage.prompt_tokens, usage.completion_tokens);
+      this.writeHeartbeatIfNeeded();
 
       // ENHANCEMENT: Include phase timing in verification log
       const phaseDuration = Date.now() - phaseStartTime;
@@ -430,6 +437,7 @@ export class Orchestrator {
     if (!this.state) return;
 
     const elapsed = Date.now() - this.state.start_time;
+    this.writeHeartbeatIfNeeded();
     if (elapsed > LIMITS.WALL_CLOCK_TIMEOUT_MS) {
       throw new LimitExceededError('Wall-clock timeout', 'wall_clock_time');
     }
@@ -502,31 +510,28 @@ export class Orchestrator {
     }
   }
 
-  private startHeartbeat(taskId: string): void {
-    const writeHeartbeat = () => {
-      try {
-        writeFileSync(
-          PATHS.HEARTBEAT_FILE,
-          JSON.stringify({
-            task_id: taskId,
-            timestamp: new Date().toISOString()
-          }),
-          'utf8'
-        );
-      } catch (err) {
-        logger.warn('Failed to write heartbeat', { error: String(err) });
-      }
-    };
+  private writeHeartbeat(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastHeartbeatWrite < 30_000) {
+      return;
+    }
 
-    writeHeartbeat();
-    this.heartbeatInterval = setInterval(writeHeartbeat, 30_000);
+    try {
+      writeFileSync(
+        PATHS.HEARTBEAT_FILE,
+        JSON.stringify({
+          timestamp: new Date().toISOString()
+        }),
+        'utf8'
+      );
+      this.lastHeartbeatWrite = now;
+    } catch (err) {
+      logger.warn('Failed to write heartbeat', { error: String(err) });
+    }
   }
 
-  private stopHeartbeat(): void {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
+  private writeHeartbeatIfNeeded(): void {
+    this.writeHeartbeat(false);
   }
 
   close(): void {
