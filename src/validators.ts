@@ -2,7 +2,7 @@ import { TaskSpec, Step } from './types.js';
 import { LIMITS } from './constants.js';
 import { existsSync, statfsSync } from 'fs';
 import { homedir } from 'os';
-import { resolve, normalize } from 'path';
+import { resolve } from 'path';
 import { ValidationError } from './utils/errors.js';
 
 // Re-export ValidationError for backward compatibility
@@ -28,6 +28,10 @@ export function validateTaskSpec(spec: any): TaskSpec {
   // Validate app_name with enhanced checks
   if (typeof spec.app_name !== 'string' || spec.app_name.length === 0) {
     throw new ValidationError('app_name must be a non-empty string');
+  }
+
+  if (spec.app_name.trim() !== spec.app_name) {
+    throw new ValidationError('app_name must not include leading or trailing whitespace');
   }
 
   if (spec.app_name.length > 256) {
@@ -57,6 +61,10 @@ export function validateTaskSpec(spec: any): TaskSpec {
   for (const feature of spec.features) {
     if (typeof feature !== 'string' || feature.length === 0) {
       throw new ValidationError('Each feature must be a non-empty string');
+    }
+
+    if (feature.trim() !== feature) {
+      throw new ValidationError(`Feature "${feature}" must not include leading or trailing whitespace`);
     }
 
     if (feature.length > 128) {
@@ -91,12 +99,12 @@ export function validateTaskSpec(spec: any): TaskSpec {
   }
 
   // SDK version validation
-  if (typeof spec.min_sdk !== 'number' || spec.min_sdk < 21 || spec.min_sdk > 34) {
+  if (!Number.isInteger(spec.min_sdk) || spec.min_sdk < 21 || spec.min_sdk > 34) {
     throw new ValidationError('min_sdk must be an integer between 21 and 34');
   }
 
-  if (typeof spec.target_sdk !== 'number' || spec.target_sdk < spec.min_sdk || spec.target_sdk > 34) {
-    throw new ValidationError('target_sdk must be >= min_sdk and <= 34');
+  if (!Number.isInteger(spec.target_sdk) || spec.target_sdk < spec.min_sdk || spec.target_sdk > 34) {
+    throw new ValidationError('target_sdk must be an integer >= min_sdk and <= 34');
   }
 
   // Version string validation
@@ -199,6 +207,9 @@ export function validateFilePath(path: string): boolean {
   
   // Safety: no directory traversal
   if (path.includes('..')) return false;
+
+  // Safety: no Windows path separators
+  if (path.includes('\\')) return false;
   
   // Safety: no null bytes or special characters
   if (path.includes('\0') || path.includes('\n') || path.includes('\r')) return false;
@@ -206,7 +217,7 @@ export function validateFilePath(path: string): boolean {
   // Safety: validate path components
   const components = path.split('/');
   for (const component of components) {
-    if (component === '' || component === '.') continue;
+    if (component === '' || component === '.') return false;
     
     // Each component must be valid filename
     if (!/^[a-zA-Z0-9_.-]+$/.test(component)) return false;
