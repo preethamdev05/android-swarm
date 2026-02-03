@@ -1,6 +1,6 @@
 # Android Swarm
 
-Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Kimi K2.5 integration.
+Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Kimi K2.5 integration via NVIDIA NIM.
 
 ## System Overview
 
@@ -35,7 +35,8 @@ This system generates complete Android applications using a multi-agent architec
 
 ### API Access
 
-- Kimi K2.5 API key (set as `KIMI_API_KEY` environment variable)
+- Kimi K2.5 API key via NVIDIA NIM (set as `KIMI_API_KEY` environment variable)
+- Get your API key: https://build.nvidia.com/moonshotai/kimi-k2_5
 
 ## Installation
 
@@ -54,7 +55,7 @@ npm run build
 ### 3. Set Environment Variables
 
 ```bash
-export KIMI_API_KEY="sk-..."
+export KIMI_API_KEY="nvapi-..."
 ```
 
 Optional variables:
@@ -218,8 +219,10 @@ Tables:
 Set the API key:
 
 ```bash
-export KIMI_API_KEY="sk-..."
+export KIMI_API_KEY="nvapi-..."
 ```
+
+Get your API key from: https://build.nvidia.com/moonshotai/kimi-k2_5
 
 ### "Another task is running"
 
@@ -254,7 +257,7 @@ src/
     verifier.ts     # Project validation
   orchestrator.ts   # Task coordination
   state-manager.ts  # SQLite and filesystem
-  kimi-client.ts    # Kimi K2.5 API client
+  kimi-client.ts    # Kimi K2.5 API client (NVIDIA NIM)
   validators.ts     # Input validation
   coding-profile.ts # Kotlin/Android standards
   logger.ts         # Logging utility
@@ -276,6 +279,15 @@ node dist/index.js agent --message '...'
 ```bash
 npm run dev  # Watch mode
 ```
+
+## API Integration
+
+This system uses NVIDIA NIM for Kimi K2.5 access:
+
+- **Endpoint**: `https://integrate.api.nvidia.com/v1/chat/completions`
+- **Model**: `moonshotai/kimi-k2.5`
+- **Authentication**: Bearer token (nvapi-* format)
+- **Parameters**: max_tokens=16384, temperature=1.0, thinking=true
 
 ## Non-Goals
 

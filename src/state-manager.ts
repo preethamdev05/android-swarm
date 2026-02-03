@@ -169,7 +169,7 @@ export class StateManager {
 
   getTask(taskId: string): any {
     const stmt = this.db.prepare('SELECT * FROM tasks WHERE task_id = ?');
-    const row = stmt.get(taskId);
+    const row = stmt.get(taskId) as any;
     
     if (!row) return null;
 
