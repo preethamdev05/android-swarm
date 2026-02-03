@@ -1,6 +1,6 @@
 # Android Swarm
 
-Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Kimi K2.5 integration via NVIDIA NIM.
+Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Moonshot Kimi API integration.
 
 ## System Overview
 
@@ -35,8 +35,8 @@ This system generates complete Android applications using a multi-agent architec
 
 ### API Access
 
-- Kimi K2.5 API key via NVIDIA NIM (set as `KIMI_API_KEY` environment variable)
-- Get your API key: https://build.nvidia.com/moonshotai/kimi-k2_5
+- Moonshot Kimi API key (set as `KIMI_API_KEY` environment variable)
+- Get your API key: https://platform.moonshot.cn/console/api-keys
 
 ## Installation
 
@@ -55,14 +55,14 @@ npm run build
 ### 3. Set Environment Variables
 
 ```bash
-export KIMI_API_KEY="nvapi-..."
+export KIMI_API_KEY="sk-..."
 ```
 
 Optional variables:
 
 ```bash
 export SWARM_DEBUG=1                    # Enable debug logging
-export SWARM_API_TIMEOUT=30             # API timeout in seconds
+export SWARM_API_TIMEOUT=120            # API timeout in seconds (default: 120)
 export SWARM_WORKSPACE_ROOT=~/.openclaw/workspace/android-swarm
 ```
 
@@ -219,10 +219,10 @@ Tables:
 Set the API key:
 
 ```bash
-export KIMI_API_KEY="nvapi-..."
+export KIMI_API_KEY="sk-..."
 ```
 
-Get your API key from: https://build.nvidia.com/moonshotai/kimi-k2_5
+Get your API key from: https://platform.moonshot.cn/console/api-keys
 
 ### "Another task is running"
 
@@ -257,7 +257,7 @@ src/
     verifier.ts     # Project validation
   orchestrator.ts   # Task coordination
   state-manager.ts  # SQLite and filesystem
-  kimi-client.ts    # Kimi K2.5 API client (NVIDIA NIM)
+  kimi-client.ts    # Moonshot Kimi API client
   validators.ts     # Input validation
   coding-profile.ts # Kotlin/Android standards
   logger.ts         # Logging utility
@@ -282,12 +282,12 @@ npm run dev  # Watch mode
 
 ## API Integration
 
-This system uses NVIDIA NIM for Kimi K2.5 access:
+This system uses Moonshot Kimi API:
 
-- **Endpoint**: `https://integrate.api.nvidia.com/v1/chat/completions`
-- **Model**: `moonshotai/kimi-k2.5`
-- **Authentication**: Bearer token (nvapi-* format)
-- **Parameters**: max_tokens=16384, temperature=1.0, thinking=true
+- **Endpoint**: `https://api.moonshot.cn/v1/chat/completions`
+- **Model**: `moonshot-v1-128k`
+- **Authentication**: Bearer token (sk-* format)
+- **Default Timeout**: 120 seconds
 
 ## Non-Goals
 
