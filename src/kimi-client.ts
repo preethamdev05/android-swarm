@@ -1,6 +1,7 @@
 import { KimiAPIResponse, KimiAPIError } from './types.js';
-import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
+import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS, RATE_LIMITER } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
+import { RateLimiter } from './utils/rate-limiter.js';
 
 /**
  * NVIDIA NIM Kimi API client with robust error handling and retry logic.
@@ -18,12 +19,18 @@ export class KimiClient {
   private apiKey: string;
   private apiCallCount: number = 0;
   private apiErrorTimestamps: number[] = [];
+  private rateLimiter: RateLimiter;
 
   constructor(apiKey: string) {
     if (!apiKey) {
       throw new Error('KIMI_API_KEY environment variable is required');
     }
     this.apiKey = apiKey;
+    this.rateLimiter = new RateLimiter({
+      tokensPerInterval: RATE_LIMITER.REQUESTS_PER_MINUTE,
+      intervalMs: 60 * 1000,
+      burst: RATE_LIMITER.BURST
+    });
   }
 
   async chat(
@@ -34,6 +41,7 @@ export class KimiClient {
     const timeoutId = setTimeout(() => controller.abort(), KIMI_API_CONFIG.TIMEOUT_MS);
 
     try {
+      await this.rateLimiter.acquire();
       const response = await this.makeRequestWithRetry(messages, controller.signal);
       return response;
     } finally {

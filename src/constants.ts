@@ -1,3 +1,8 @@
+const parsePositiveInt = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 export const LIMITS = {
   MAX_API_CALLS: 80,
   MAX_TOTAL_TOKENS: 200000,
@@ -63,6 +68,11 @@ export const RETRY_CONFIG = {
   
   // Jitter factor for backoff randomization
   JITTER_FACTOR: 0.25 // ±25% of base delay
+} as const;
+
+export const RATE_LIMITER = {
+  REQUESTS_PER_MINUTE: parsePositiveInt(process.env.SWARM_API_RATE_LIMIT, 10),
+  BURST: parsePositiveInt(process.env.SWARM_API_RATE_BURST, 3)
 } as const;
 
 export const PATHS = {
