@@ -85,15 +85,44 @@ export class StateManager {
     `);
   }
 
+  /**
+   * CORRECTIVE FIX: Made createTask logically atomic.
+   * If workspace creation fails, DB entry is rolled back.
+   * 
+   * @throws Error if task creation fails (DB or filesystem)
+   */
   createTask(taskId: string, taskSpec: TaskSpec): void {
+    // Insert into database first
     const stmt = this.db.prepare(
       'INSERT INTO tasks (task_id, state, task_spec, start_time) VALUES (?, ?, ?, ?)'
     );
     stmt.run(taskId, 'PLANNING', JSON.stringify(taskSpec), Date.now());
 
+    // CORRECTIVE FIX: Attempt workspace creation with rollback on failure
     const taskDir = join(PATHS.WORKSPACE_ROOT, taskId);
-    if (!existsSync(taskDir)) {
-      mkdirSync(taskDir, { recursive: true, mode: 0o755 });
+    try {
+      if (!existsSync(taskDir)) {
+        mkdirSync(taskDir, { recursive: true, mode: 0o755 });
+      }
+    } catch (err) {
+      // CORRECTIVE FIX: Rollback DB insert if filesystem operation fails
+      logger.error('Failed to create workspace directory, rolling back task', {
+        task_id: taskId,
+        directory: taskDir,
+        error: String(err)
+      });
+      
+      try {
+        const deleteStmt = this.db.prepare('DELETE FROM tasks WHERE task_id = ?');
+        deleteStmt.run(taskId);
+      } catch (deleteErr) {
+        logger.error('Failed to rollback task after workspace creation failure', {
+          task_id: taskId,
+          error: String(deleteErr)
+        });
+      }
+      
+      throw new Error(`Failed to create task workspace: ${err}`);
     }
   }
 
