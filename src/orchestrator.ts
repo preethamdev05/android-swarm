@@ -7,11 +7,20 @@ import { CoderAgent } from './agents/coder.js';
 import { CriticAgent } from './agents/critic.js';
 import { VerifierAgent } from './agents/verifier.js';
 import { validateTaskSpec, validatePlan, checkDiskSpace, ValidationError } from './validators.js';
-import { LimitExceededError, CircuitBreakerError } from './utils/errors.js';
+import { LimitExceededError, CircuitBreakerError, APIError, TimeoutError, isTransientError } from './utils/errors.js';
 import { LIMITS, PATHS } from './constants.js';
 import { logger } from './logger.js';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 
+/**
+ * Task orchestrator managing multi-agent workflow.
+ * 
+ * Failure handling model:
+ * - TRANSIENT failures (API errors, timeouts): Immediate retry, count against step limit
+ * - SEMANTIC failures (Critic rejections): Modified prompt retry, separate tracking
+ * - CIRCUIT BREAKER: Activates on consecutive transient failures
+ * - FEEDBACK LOOP DETECTION: Activates on repeated Critic rejections
+ */
 export class Orchestrator {
   private stateManager: StateManager;
   private kimiClient: KimiClient;
@@ -21,6 +30,7 @@ export class Orchestrator {
   private verifierAgent: VerifierAgent;
   private state: OrchestratorState | null = null;
   private consecutiveFailures: number = 0;
+  private consecutiveCriticRejections: number = 0;
   private abortRequested: boolean = false;
 
   constructor() {
@@ -160,7 +170,9 @@ export class Orchestrator {
       });
 
       await this.executeStep(step);
+      // Reset counters on successful step completion
       this.consecutiveFailures = 0;
+      this.consecutiveCriticRejections = 0;
     }
   }
 
@@ -179,11 +191,13 @@ export class Orchestrator {
       stepState.attempt++;
       this.checkLimits();
       this.checkEmergencyStop();
+      this.checkFeedbackLoop();
 
       if (this.abortRequested) {
         throw new Error('Abort requested');
       }
 
+      // Coder phase
       try {
         stepState.coder_output = await this.coderAgent.generateFile(
           step,
@@ -193,20 +207,32 @@ export class Orchestrator {
         );
         this.recordAPICall('coder');
       } catch (err) {
+        // Classify error type
+        const isTransient = isTransientError(err);
+        
         logger.error('Coder failed', { 
           step: step.step_number, 
           attempt: stepState.attempt,
-          error: String(err) 
+          error: String(err),
+          transient: isTransient
         });
         
-        if (stepState.attempt >= LIMITS.MAX_STEP_RETRIES) {
+        if (isTransient) {
+          // TRANSIENT failure: API/network error
           this.consecutiveFailures++;
           this.checkCircuitBreaker();
-          throw new Error(`Step ${step.step_number} failed after ${LIMITS.MAX_STEP_RETRIES} attempts`);
+          
+          if (stepState.attempt >= LIMITS.MAX_STEP_RETRIES) {
+            throw new Error(`Step ${step.step_number} failed after ${LIMITS.MAX_STEP_RETRIES} attempts (transient errors)`);
+          }
+          continue; // Retry immediately
+        } else {
+          // FATAL failure: validation error, etc.
+          throw new Error(`Step ${step.step_number} coder failed: ${err}`);
         }
-        continue;
       }
 
+      // Critic phase
       const criticResult = await this.criticAgent.reviewFile(
         step.file_path,
         stepState.coder_output,
@@ -229,6 +255,7 @@ export class Orchestrator {
       );
 
       if (criticResult.decision === 'ACCEPT') {
+        // Success path
         this.stateManager.writeFile(
           this.state.task_id,
           step.file_path,
@@ -243,17 +270,24 @@ export class Orchestrator {
         return;
       }
 
-      logger.warn('Step rejected', {
+      // SEMANTIC failure: Critic rejection
+      this.consecutiveCriticRejections++;
+      
+      logger.warn('Step rejected by Critic', {
         step: step.step_number,
         attempt: stepState.attempt,
-        issues: criticResult.issues.length
+        issues: criticResult.issues.length,
+        consecutive_rejections: this.consecutiveCriticRejections
       });
 
       if (stepState.attempt >= LIMITS.MAX_STEP_RETRIES) {
-        this.consecutiveFailures++;
-        this.checkCircuitBreaker();
-        throw new Error(`Step ${step.step_number} rejected after ${LIMITS.MAX_STEP_RETRIES} attempts`);
+        throw new Error(
+          `Step ${step.step_number} rejected after ${LIMITS.MAX_STEP_RETRIES} attempts. ` +
+          `Issues: ${JSON.stringify(criticResult.issues.slice(0, 3))}`
+        );
       }
+      
+      // Continue retry loop with modified context (critic_issues passed to Coder)
     }
   }
 
@@ -291,30 +325,62 @@ export class Orchestrator {
 
     } catch (err) {
       logger.warn('Verification failed', { error: String(err) });
+      // Non-fatal: continue to completion
     }
   }
 
+  /**
+   * Enforces hard limits: wall-clock timeout, API calls, tokens.
+   * Throws LimitExceededError if any limit is breached.
+   */
   private checkLimits(): void {
     if (!this.state) return;
 
+    // Wall-clock timeout
     const elapsed = Date.now() - this.state.start_time;
     if (elapsed > LIMITS.WALL_CLOCK_TIMEOUT_MS) {
       throw new LimitExceededError('Wall-clock timeout', 'wall_clock_time');
     }
 
+    // API call limit
     const task = this.stateManager.getTask(this.state.task_id);
     if (task.api_call_count >= LIMITS.MAX_API_CALLS) {
       throw new LimitExceededError('API call limit exceeded', 'api_calls');
     }
 
+    // Token limit
     if (task.total_tokens >= LIMITS.MAX_TOTAL_TOKENS) {
       throw new LimitExceededError('Token limit exceeded', 'tokens');
     }
   }
 
+  /**
+   * Circuit breaker: activates on consecutive transient failures.
+   * Prevents wasting resources when API is systematically failing.
+   */
   private checkCircuitBreaker(): void {
     if (this.consecutiveFailures >= LIMITS.CONSECUTIVE_FAILURE_LIMIT) {
-      throw new CircuitBreakerError('Consecutive failures threshold reached');
+      throw new CircuitBreakerError(
+        `Circuit breaker activated: ${this.consecutiveFailures} consecutive transient failures`
+      );
+    }
+  }
+
+  /**
+   * Feedback loop detection: activates on repeated Critic rejections.
+   * Prevents infinite Coder->Critic->Coder loops with same issues.
+   */
+  private checkFeedbackLoop(): void {
+    const threshold = LIMITS.CONSECUTIVE_FAILURE_LIMIT * 2; // More lenient for semantic failures
+    if (this.consecutiveCriticRejections >= threshold) {
+      logger.error('Feedback loop detected', {
+        consecutive_rejections: this.consecutiveCriticRejections,
+        threshold
+      });
+      throw new CircuitBreakerError(
+        `Feedback loop detected: ${this.consecutiveCriticRejections} consecutive Critic rejections. ` +
+        `Coder unable to satisfy Critic requirements.`
+      );
     }
   }
 

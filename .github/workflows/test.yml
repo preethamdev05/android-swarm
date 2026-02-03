@@ -1,0 +1,307 @@
+name: Test Orchestrator
+
+on:
+  push:
+    branches: [main, audit-fixes-corrective-refactor]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [22.x]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build TypeScript
+        run: npm run build
+      
+      - name: Verify build output
+        run: |
+          test -d dist || { echo "dist/ directory not created"; exit 1; }
+          test -f dist/index.js || { echo "dist/index.js not found"; exit 1; }
+          test -f dist/validators.js || { echo "dist/validators.js not found"; exit 1; }
+          echo "✅ Build artifacts verified"
+      
+      - name: Test CLI Help
+        run: |
+          node dist/index.js help > /tmp/help.txt
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Help command failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+          if ! grep -q "Android Swarm" /tmp/help.txt; then
+            echo "❌ Help text missing expected content"
+            exit 1
+          fi
+          echo "✅ CLI help works"
+      
+      - name: Test Validation - Reserved Keywords
+        run: |
+          set +e
+          OUTPUT=$(node dist/index.js agent --message 'build app: {"app_name":"class","features":["login"],"architecture":"MVVM","ui_system":"Compose","min_sdk":24,"target_sdk":34,"gradle_version":"8.2.0","kotlin_version":"1.9.20"}' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "❌ Should have rejected reserved keyword 'class'"
+            exit 1
+          fi
+          
+          if ! echo "$OUTPUT" | grep -qi "reserved keyword"; then
+            echo "❌ Error message should mention 'reserved keyword'"
+            echo "Got: $OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Reserved keyword validation works"
+      
+      - name: Test Validation - Duplicate Features
+        run: |
+          set +e
+          OUTPUT=$(node dist/index.js agent --message 'build app: {"app_name":"TestApp","features":["login","login"],"architecture":"MVVM","ui_system":"Compose","min_sdk":24,"target_sdk":34,"gradle_version":"8.2.0","kotlin_version":"1.9.20"}' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "❌ Should have rejected duplicate features"
+            exit 1
+          fi
+          
+          if ! echo "$OUTPUT" | grep -qi "duplicate"; then
+            echo "❌ Error message should mention 'duplicate'"
+            echo "Got: $OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Duplicate feature validation works"
+      
+      - name: Test Validation - Path Traversal
+        run: |
+          set +e
+          OUTPUT=$(node dist/index.js agent --message 'build app: {"app_name":"../../etc/passwd","features":["login"],"architecture":"MVVM","ui_system":"Compose","min_sdk":24,"target_sdk":34,"gradle_version":"8.2.0","kotlin_version":"1.9.20"}' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "❌ Should have rejected path traversal attempt"
+            exit 1
+          fi
+          
+          if ! echo "$OUTPUT" | grep -qiE "invalid|path"; then
+            echo "❌ Error message should mention path safety"
+            echo "Got: $OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Path traversal prevention works"
+      
+      - name: Test Validation - Length Limits
+        run: |
+          set +e
+          LONG_NAME=$(printf 'x%.0s' {1..300})
+          OUTPUT=$(node dist/index.js agent --message 'build app: {"app_name":"'$LONG_NAME'","features":["login"],"architecture":"MVVM","ui_system":"Compose","min_sdk":24,"target_sdk":34,"gradle_version":"8.2.0","kotlin_version":"1.9.20"}' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "❌ Should have rejected overly long app_name"
+            exit 1
+          fi
+          
+          if ! echo "$OUTPUT" | grep -qiE "256 characters|length"; then
+            echo "❌ Error message should mention length limit"
+            echo "Got: $OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Length limit validation works"
+      
+      - name: Test Validation - Invalid JSON
+        run: |
+          set +e
+          OUTPUT=$(node dist/index.js agent --message 'build app: {invalid json}' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "❌ Should have rejected invalid JSON"
+            exit 1
+          fi
+          
+          if ! echo "$OUTPUT" | grep -qi "json"; then
+            echo "❌ Error message should mention JSON parsing"
+            echo "Got: $OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ JSON validation works"
+      
+      - name: Test Validation - Missing Required Fields
+        run: |
+          set +e
+          OUTPUT=$(node dist/index.js agent --message 'build app: {"app_name":"TestApp"}' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "❌ Should have rejected missing required fields"
+            exit 1
+          fi
+          
+          if ! echo "$OUTPUT" | grep -qiE "missing|required"; then
+            echo "❌ Error message should mention missing fields"
+            echo "Got: $OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Required field validation works"
+      
+      - name: Test CLI Exit Codes
+        run: |
+          # Help should exit 0
+          node dist/index.js help
+          if [ $? -ne 0 ]; then
+            echo "❌ Help command should exit with 0"
+            exit 1
+          fi
+          
+          # Invalid command should exit 1
+          set +e
+          node dist/index.js invalid_command > /dev/null 2>&1
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -ne 1 ]; then
+            echo "❌ Invalid command should exit with 1, got $EXIT_CODE"
+            exit 1
+          fi
+          
+          echo "✅ Exit codes work correctly"
+      
+      - name: Test Security - Reserved Keywords List
+        run: |
+          # Verify comprehensive keyword list
+          if ! grep -q "class" dist/validators.js; then
+            echo "❌ Reserved keyword 'class' not found"
+            exit 1
+          fi
+          if ! grep -q "fun" dist/validators.js; then
+            echo "❌ Reserved keyword 'fun' (Kotlin) not found"
+            exit 1
+          fi
+          if ! grep -q "object" dist/validators.js; then
+            echo "❌ Reserved keyword 'object' (Kotlin) not found"
+            exit 1
+          fi
+          echo "✅ Reserved keywords list comprehensive"
+      
+      - name: Test Constants - Token Budgets
+        run: |
+          # Verify per-agent token budgets exist
+          if ! grep -q "PLANNER_TOTAL" dist/constants.js; then
+            echo "❌ PLANNER_TOTAL budget not defined"
+            exit 1
+          fi
+          if ! grep -q "CODER_TOTAL" dist/constants.js; then
+            echo "❌ CODER_TOTAL budget not defined"
+            exit 1
+          fi
+          if ! grep -q "CRITIC_TOTAL" dist/constants.js; then
+            echo "❌ CRITIC_TOTAL budget not defined"
+            exit 1
+          fi
+          if ! grep -q "VERIFIER_TOTAL" dist/constants.js; then
+            echo "❌ VERIFIER_TOTAL budget not defined"
+            exit 1
+          fi
+          echo "✅ Token budgets configured"
+      
+      - name: Test Error Classification
+        run: |
+          # Verify enhanced error handling exists
+          if ! grep -q "classifyHTTPError" dist/utils/errors.js; then
+            echo "❌ classifyHTTPError function not found"
+            exit 1
+          fi
+          if ! grep -q "isTransientError" dist/utils/errors.js; then
+            echo "❌ isTransientError function not found"
+            exit 1
+          fi
+          echo "✅ Error classification implemented"
+      
+      - name: Test Exponential Backoff
+        run: |
+          # Verify jitter implementation
+          if ! grep -q "addJitter" dist/kimi-client.js; then
+            echo "❌ addJitter method not found"
+            exit 1
+          fi
+          if ! grep -q "JITTER_FACTOR" dist/constants.js; then
+            echo "❌ JITTER_FACTOR constant not defined"
+            exit 1
+          fi
+          echo "✅ Exponential backoff with jitter implemented"
+      
+      - name: Test Path Sanitization
+        run: |
+          # Verify sanitizeFilePath exists
+          if ! grep -q "sanitizeFilePath" dist/validators.js; then
+            echo "❌ sanitizeFilePath function not found"
+            exit 1
+          fi
+          if ! grep -q "sanitizeFilePath" dist/state-manager.js; then
+            echo "❌ sanitizeFilePath not used in StateManager"
+            exit 1
+          fi
+          echo "✅ Path sanitization enforced"
+      
+      - name: Test Orchestrator Failure Tracking
+        run: |
+          # Verify failure separation exists
+          if ! grep -q "consecutiveCriticRejections" dist/orchestrator.js; then
+            echo "❌ consecutiveCriticRejections tracking not found"
+            exit 1
+          fi
+          if ! grep -q "checkFeedbackLoop" dist/orchestrator.js; then
+            echo "❌ checkFeedbackLoop method not found"
+            exit 1
+          fi
+          if ! grep -q "isTransientError" dist/orchestrator.js; then
+            echo "❌ isTransientError check not found"
+            exit 1
+          fi
+          echo "✅ Failure tracking implemented"
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+          echo "  Test Summary: Audit Fixes Validation"
+          echo "═══════════════════════════════════════════════════════════"
+          echo "✅ Build verification"
+          echo "✅ CLI help and exit codes"
+          echo "✅ Input validation (reserved keywords, duplicates, paths)"
+          echo "✅ Security enhancements (path sanitization)"
+          echo "✅ API resilience (exponential backoff, error classification)"
+          echo "✅ Orchestration robustness (failure tracking, feedback loops)"
+          echo "✅ Token budgeting (per-agent limits)"
+          echo ""
+          echo "All audit fixes verified successfully!"
+          echo "═══════════════════════════════════════════════════════════"

@@ -2,6 +2,18 @@ import { KimiAPIResponse, KimiAPIError } from './types.js';
 import { KIMI_API_CONFIG, RETRY_CONFIG, LIMITS } from './constants.js';
 import { APIError, TimeoutError, CircuitBreakerError, classifyHTTPError } from './utils/errors.js';
 
+/**
+ * Kimi K2.5 API client with robust error handling and retry logic.
+ * 
+ * Error classification:
+ * - TRANSIENT: 429 (rate limit), 5xx (server errors), timeouts, network errors
+ * - FATAL: 401 (auth), 403 (quota), 400 (invalid request), context_length_exceeded
+ * 
+ * Retry strategy:
+ * - Rate limit (429): Exponential backoff with jitter, up to 3 attempts
+ * - Server errors (5xx): Single retry after delay
+ * - Fatal errors: No retry, fail immediately
+ */
 export class KimiClient {
   private apiKey: string;
   private apiCallCount: number = 0;
@@ -42,38 +54,57 @@ export class KimiClient {
         if (err instanceof APIError || err instanceof TimeoutError) {
           lastError = err;
 
+          // FATAL errors: no retry
           if (!lastError.transient) {
             throw lastError;
           }
 
-          if (err instanceof APIError && err.statusCode === 429 && attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES - 1) {
-            const delay = RETRY_CONFIG.RATE_LIMIT_DELAYS_MS[attempt];
+          // TRANSIENT: Rate limit (429) - exponential backoff with jitter
+          if (err instanceof APIError && err.statusCode === 429) {
+            if (attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES - 1) {
+              const baseDelay = RETRY_CONFIG.RATE_LIMIT_DELAYS_MS[attempt];
+              const delay = this.addJitter(baseDelay);
+              await this.sleep(delay);
+              continue;
+            }
+          }
+
+          // TRANSIENT: Server errors (5xx) - single retry
+          if (err instanceof APIError && err.statusCode >= 500 && err.statusCode < 600) {
+            if (attempt === 0) {
+              const delay = this.addJitter(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
+              await this.sleep(delay);
+              continue;
+            }
+          }
+
+          // TRANSIENT: Timeout - single retry
+          if (err instanceof TimeoutError && attempt === 0) {
+            const delay = this.addJitter(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
             await this.sleep(delay);
             continue;
           }
 
-          if (err instanceof APIError && err.statusCode >= 500 && err.statusCode < 600 && attempt === 0) {
-            await this.sleep(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
-            continue;
-          }
-
+          // Exhausted retries for transient error
           throw lastError;
         }
         
-        // Legacy KimiAPIError fallback
+        // Legacy KimiAPIError fallback (for backward compatibility)
         const legacyError = err as KimiAPIError;
         if (!legacyError.transient) {
           throw err;
         }
 
         if (legacyError.status === 429 && attempt < RETRY_CONFIG.MAX_RATE_LIMIT_RETRIES - 1) {
-          const delay = RETRY_CONFIG.RATE_LIMIT_DELAYS_MS[attempt];
+          const baseDelay = RETRY_CONFIG.RATE_LIMIT_DELAYS_MS[attempt];
+          const delay = this.addJitter(baseDelay);
           await this.sleep(delay);
           continue;
         }
 
         if (legacyError.status >= 500 && legacyError.status < 600 && attempt === 0) {
-          await this.sleep(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
+          const delay = this.addJitter(RETRY_CONFIG.SERVER_ERROR_DELAY_MS);
+          await this.sleep(delay);
           continue;
         }
 
@@ -88,6 +119,7 @@ export class KimiClient {
     messages: Array<{ role: string; content: string }>,
     signal: AbortSignal
   ): Promise<KimiAPIResponse> {
+    // Check circuit breaker before making request
     this.checkAPIErrorRate();
 
     const requestBody = {
@@ -111,12 +143,22 @@ export class KimiClient {
         const errorBody = await response.text();
         const classification = classifyHTTPError(response.status);
         
+        // Parse error body for specific Kimi error codes
+        let errorDetail = '';
+        try {
+          const errorJson = JSON.parse(errorBody);
+          if (errorJson.error?.code) {
+            errorDetail = ` (${errorJson.error.code})`;
+          }
+        } catch {}
+        
+        // Record error for circuit breaker (only for non-transient or server errors)
         if (!classification.transient || response.status >= 500) {
           this.recordAPIError();
         }
 
         throw new APIError(
-          `${classification.message}: ${errorBody}`,
+          `${classification.message}${errorDetail}: ${errorBody}`,
           response.status,
           classification.transient
         );
@@ -136,24 +178,44 @@ export class KimiClient {
         throw err;
       }
 
+      // Network errors are transient
       this.recordAPIError();
       throw new APIError(`Network error: ${err.message}`, 0, true);
     }
   }
 
+  /**
+   * Circuit breaker: checks API error rate and throws if threshold exceeded.
+   * 
+   * Safety mechanism to prevent cascading failures when API is degraded.
+   * Threshold: 5 errors within 60 seconds.
+   */
   private checkAPIErrorRate(): void {
     const now = Date.now();
     const windowStart = now - LIMITS.API_ERROR_RATE_WINDOW_MS;
     
+    // Clean up old timestamps outside the window
     this.apiErrorTimestamps = this.apiErrorTimestamps.filter(ts => ts > windowStart);
     
     if (this.apiErrorTimestamps.length >= LIMITS.API_ERROR_RATE_LIMIT) {
-      throw new CircuitBreakerError('API error rate exceeded');
+      throw new CircuitBreakerError(
+        `API error rate exceeded: ${this.apiErrorTimestamps.length} errors in ${LIMITS.API_ERROR_RATE_WINDOW_MS / 1000}s`
+      );
     }
   }
 
   private recordAPIError(): void {
     this.apiErrorTimestamps.push(Date.now());
+  }
+
+  /**
+   * Adds random jitter (±25%) to delay for exponential backoff.
+   * Prevents thundering herd problem when multiple requests retry simultaneously.
+   */
+  private addJitter(delayMs: number): number {
+    const jitterFactor = 0.25; // ±25%
+    const jitter = (Math.random() * 2 - 1) * jitterFactor * delayMs;
+    return Math.max(100, delayMs + jitter); // Minimum 100ms
   }
 
   private sleep(ms: number): Promise<void> {
