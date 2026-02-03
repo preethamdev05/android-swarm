@@ -6,7 +6,7 @@ export const LIMITS = {
   MAX_PLAN_STEPS: 25,
   MAX_FILE_SIZE_BYTES: 50 * 1024, // 50KB per file
   MAX_WORKSPACE_SIZE_BYTES: 1024 * 1024 * 1024, // 1GB per task workspace
-  API_TIMEOUT_MS: 30 * 1000, // 30 seconds
+  API_TIMEOUT_MS: 120 * 1000, // 120 seconds (increased for NVIDIA NIM latency)
   MAX_SUSTAINED_MEMORY_MB: 500,
   MIN_DISK_SPACE_MB: 100,
   CONSECUTIVE_FAILURE_LIMIT: 3,
@@ -87,13 +87,13 @@ export const PATHS = {
 export const KIMI_API_CONFIG = {
   ENDPOINT: 'https://api.moonshot.cn/v1/chat/completions',
   MODEL: 'kimi-k2.5',
-  // API timeout: respect environment override for Termux compatibility
-  TIMEOUT_MS: parseInt(process.env.SWARM_API_TIMEOUT || '30') * 1000,
+  // API timeout: increased for NVIDIA NIM latency, respect environment override for tuning
+  TIMEOUT_MS: parseInt(process.env.SWARM_API_TIMEOUT || '120') * 1000,
   
   // Kimi K2.5 specifications (for reference)
   // Max input tokens: 256K (context window)
   // Max output tokens: 8,192
   // Agent swarm capability: up to 100 sub-agents, 1,500 tool calls
   // Connection timeout: 30s
-  // Read timeout: 600s (10 min)
+  // Read timeout: 600s (10 min) - NVIDIA NIM may have higher latency
 } as const;
