@@ -12,11 +12,7 @@ import { existsSync, unlinkSync } from 'fs';
  * - 1: Error (validation, execution failure, etc.)
  */
 export class CLI {
-  private orchestrator: Orchestrator;
-
-  constructor() {
-    this.orchestrator = new Orchestrator();
-  }
+  private orchestrator: Orchestrator | null = null;
 
   async handleCommand(args: string[]): Promise<void> {
     const command = args[2];
@@ -91,6 +87,21 @@ export class CLI {
       process.exit(1);
     }
 
+    // Lazy initialization: only create orchestrator when needed for agent command
+    // This allows help/abort/cleanup commands to work without KIMI_API_KEY
+    try {
+      this.orchestrator = new Orchestrator();
+    } catch (err: any) {
+      if (err.message.includes('KIMI_API_KEY')) {
+        console.error('\n❌ Error: KIMI_API_KEY environment variable is required\n');
+        console.error('Set your API key:');
+        console.error('  export KIMI_API_KEY="sk-your-key-here"\n');
+        console.error('Get your API key from: https://platform.moonshot.cn/console/api-keys\n');
+        process.exit(1);
+      }
+      throw err;
+    }
+
     try {
       console.log('\n⚙️  Starting Android Swarm task...\n');
       console.log('App:', taskSpec.app_name);
@@ -129,7 +140,9 @@ export class CLI {
       console.error('');
       process.exit(1);
     } finally {
-      this.orchestrator.close();
+      if (this.orchestrator) {
+        this.orchestrator.close();
+      }
     }
   }
 
