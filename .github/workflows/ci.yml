@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, 'feat/**', 'fix/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [22.x]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Verify lockfile exists
+      run: |
+        if [ ! -f package-lock.json ]; then
+          echo "ERROR: package-lock.json missing"
+          exit 1
+        fi
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Verify lockfile integrity
+      run: |
+        git diff --exit-code package-lock.json || {
+          echo "ERROR: package-lock.json was modified during npm ci"
+          exit 1
+        }
+    
+    - name: Build TypeScript
+      run: npm run build
+    
+    - name: Run tests
+      run: npm test
+      env:
+        # Use dummy API key for tests that don't make real API calls
+        KIMI_API_KEY: "test-key-for-ci"
+    
+    - name: Check for build artifacts
+      run: |
+        if [ ! -d dist ]; then
+          echo "ERROR: dist/ directory not created"
+          exit 1
+        fi
+        if [ ! -f dist/index.js ]; then
+          echo "ERROR: dist/index.js not found"
+          exit 1
+        fi
+
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22.x
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Check TypeScript types
+      run: npx tsc --noEmit
+    
+    - name: Verify no NVIDIA NIM references in code
+      run: |
+        if grep -r "NVIDIA NIM" src/ README.md 2>/dev/null; then
+          echo "ERROR: Found NVIDIA NIM references (should be Google Gemini)"
+          exit 1
+        fi
+        echo "✓ No NVIDIA NIM references found"
