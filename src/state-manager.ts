@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
 import { TaskSpec, Step, CriticIssue, TaskState, VerifierOutput } from './types.js';
-import { PATHS } from './constants.js';
+import { PATHS, LIMITS } from './constants.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, chmodSync } from 'fs';
 import { dirname, join } from 'path';
-import { sanitizeFilePath } from './validators.js';
+import { sanitizeFilePath, ValidationError } from './validators.js';
+import { logger } from './logger.js';
 
 /**
  * Manages task state persistence using SQLite database and filesystem operations.
@@ -13,6 +14,7 @@ import { sanitizeFilePath } from './validators.js';
  * - SQLite operations use a single connection (serialized by better-sqlite3)
  * - Atomic write operations prevent corruption
  * - Workspace boundary enforcement prevents directory traversal
+ * - File size limits enforced before disk write
  */
 export class StateManager {
   private db: Database.Database;
@@ -183,21 +185,45 @@ export class StateManager {
   /**
    * Writes a file to the task workspace with path validation and atomic write.
    * 
+   * CORRECTIVE FIX: Added file size enforcement before disk write.
+   * 
    * Safety guarantees:
    * - Path is validated against directory traversal
+   * - File size checked against LIMITS.MAX_FILE_SIZE_BYTES
    * - Atomic write prevents partial file corruption
    * - Permissions set appropriately for file type
    * 
    * @param taskId - The task ID (used as workspace subdirectory)
    * @param filePath - The relative file path (must pass validation)
    * @param content - The file content to write
-   * @throws ValidationError if path is unsafe
+   * @throws ValidationError if path is unsafe or file size exceeds limit
    */
   writeFile(taskId: string, filePath: string, content: string): void {
     const taskDir = join(PATHS.WORKSPACE_ROOT, taskId);
     
     // Critical: sanitize and validate path to prevent directory traversal
     const fullPath = sanitizeFilePath(taskDir, filePath);
+    
+    // CORRECTIVE FIX: Enforce file size limit before disk write
+    const contentSize = Buffer.byteLength(content, 'utf8');
+    
+    if (contentSize > LIMITS.MAX_FILE_SIZE_BYTES) {
+      throw new ValidationError(
+        `File size ${contentSize} bytes exceeds limit of ${LIMITS.MAX_FILE_SIZE_BYTES} bytes for ${filePath}`
+      );
+    }
+    
+    // CORRECTIVE FIX: Warn when file approaches limit (80% threshold)
+    const warningThreshold = LIMITS.MAX_FILE_SIZE_BYTES * 0.8;
+    if (contentSize > warningThreshold) {
+      logger.warn('File size approaching limit', {
+        file_path: filePath,
+        size_bytes: contentSize,
+        limit_bytes: LIMITS.MAX_FILE_SIZE_BYTES,
+        usage_percent: Math.round((contentSize / LIMITS.MAX_FILE_SIZE_BYTES) * 100)
+      });
+    }
+    
     const dir = dirname(fullPath);
 
     // Ensure directory exists
