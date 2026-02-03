@@ -1,6 +1,7 @@
 import { KimiClient } from '../kimi-client.js';
 import { TaskSpec, Step, CriticOutput } from '../types.js';
 import { CODING_PROFILE } from '../coding-profile.js';
+import { validateCriticResponse } from '../utils/llm-validation.js';
 
 export class CriticAgent {
   constructor(private kimiClient: KimiClient) {}
@@ -27,37 +28,21 @@ export class CriticAgent {
       }
     ];
 
+    const response = await this.kimiClient.chat(messages, 'critic');
+    const content = response.choices[0].message.content;
+    const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0 };
+
+    let result: unknown;
     try {
-      const response = await this.kimiClient.chat(messages, 'critic');
-      const content = response.choices[0].message.content;
-      const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0 };
-
-      let result: any;
-      try {
-        result = JSON.parse(content);
-      } catch (err) {
-        console.warn(`Critic failed to parse JSON, treating as ACCEPT: ${err}`);
-        // CORRECTIVE FIX: Include usage even on parse failure
-        return { decision: 'ACCEPT', issues: [], usage };
-      }
-
-      if (!result.decision || !['ACCEPT', 'REJECT'].includes(result.decision)) {
-        console.warn('Critic returned invalid decision, treating as ACCEPT');
-        return { decision: 'ACCEPT', issues: [], usage };
-      }
-
-      if (!Array.isArray(result.issues)) {
-        result.issues = [];
-      }
-
-      // CORRECTIVE FIX: Return both critic output and usage
-      return { ...result, usage } as CriticOutput & { usage: { prompt_tokens: number; completion_tokens: number } };
-
+      result = JSON.parse(content);
     } catch (err) {
-      console.warn(`Critic agent failed, treating as ACCEPT: ${err}`);
-      // CORRECTIVE FIX: Fallback with zero usage on total failure
-      return { decision: 'ACCEPT', issues: [], usage: { prompt_tokens: 0, completion_tokens: 0 } };
+      throw new Error(`Failed to parse critic response as JSON: ${err}`);
     }
+
+    const validated = validateCriticResponse(result);
+
+    // CORRECTIVE FIX: Return both critic output and usage
+    return { ...validated, usage } as CriticOutput & { usage: { prompt_tokens: number; completion_tokens: number } };
   }
 
   private buildPrompt(

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { CLI } from './cli.js';
+import { getExitCodeForError } from './utils/exit-codes.js';
 
 async function main() {
   const cli = new CLI();
@@ -9,7 +10,7 @@ async function main() {
     await cli.handleCommand(process.argv);
   } catch (err) {
     console.error('Fatal error:', err);
-    process.exit(1);
+    process.exit(getExitCodeForError(err));
   }
 }
 

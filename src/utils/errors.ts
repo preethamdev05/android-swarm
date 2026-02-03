@@ -48,6 +48,13 @@ export class CircuitBreakerError extends SwarmError {
   }
 }
 
+export class VerificationError extends SwarmError {
+  constructor(message: string) {
+    super(message, 'VERIFICATION_ERROR', false);
+    this.name = 'VerificationError';
+  }
+}
+
 /**
  * Determines if an error is transient (should be retried) or fatal.
  * 

@@ -2,6 +2,7 @@ import { KimiClient } from '../kimi-client.js';
 import { TaskSpec, Step } from '../types.js';
 import { CODING_PROFILE } from '../coding-profile.js';
 import { TOKEN_LIMITS } from '../constants.js';
+import { validatePlannerResponse } from '../utils/llm-validation.js';
 
 export class PlannerAgent {
   constructor(private kimiClient: KimiClient) {}
@@ -27,20 +28,18 @@ export class PlannerAgent {
     const response = await this.kimiClient.chat(messages, 'planner');
     const content = response.choices[0].message.content;
 
-    let plan: any;
+    let plan: unknown;
     try {
       plan = JSON.parse(content);
     } catch (err) {
       throw new Error(`Failed to parse planner response as JSON: ${err}`);
     }
 
-    if (!Array.isArray(plan)) {
-      throw new Error('Planner response must be a JSON array');
-    }
+    const validatedPlan = validatePlannerResponse(plan);
 
     // CORRECTIVE FIX: Return both plan and usage data
     return {
-      plan: plan as Step[],
+      plan: validatedPlan as Step[],
       usage: response.usage || { prompt_tokens: 0, completion_tokens: 0 }
     };
   }
