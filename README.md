@@ -1,6 +1,6 @@
 # Android Swarm
 
-Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Moonshot Kimi API integration.
+Android app generation swarm orchestrator for OpenClaw - Termux/Ubuntu compatible agent system with Google Gemini API integration.
 
 ## System Overview
 
@@ -35,8 +35,8 @@ This system generates complete Android applications using a multi-agent architec
 
 ### API Access
 
-- Moonshot Kimi API key (set as `KIMI_API_KEY` environment variable)
-- Get your API key: https://platform.moonshot.cn/console/api-keys
+- Google Gemini API key (set as `KIMI_API_KEY` environment variable)
+- Get your free API key: https://aistudio.google.com/app/apikey
 
 ## Installation
 
@@ -55,7 +55,7 @@ npm run build
 ### 3. Set Environment Variables
 
 ```bash
-export KIMI_API_KEY="sk-..."
+export KIMI_API_KEY="AIzaSy..."
 ```
 
 Optional variables:
@@ -216,13 +216,13 @@ Tables:
 
 ### "KIMI_API_KEY environment variable is required"
 
-Set the API key:
+Set the Gemini API key:
 
 ```bash
-export KIMI_API_KEY="sk-..."
+export KIMI_API_KEY="AIzaSy..."
 ```
 
-Get your API key from: https://platform.moonshot.cn/console/api-keys
+Get your free API key from: https://aistudio.google.com/app/apikey
 
 ### "Another task is running"
 
@@ -244,6 +244,15 @@ Task exceeded 200,000 tokens. Reduce number of features or split into multiple t
 
 Task took longer than 90 minutes. Review task complexity.
 
+### "Quota exceeded" or "Rate limit"
+
+Gemini free tier limits:
+- 15 requests per minute
+- 1 million tokens per minute
+- 1,500 requests per day
+
+Wait a few minutes and retry, or upgrade to paid tier.
+
 ## Development
 
 ### Project Structure
@@ -257,7 +266,7 @@ src/
     verifier.ts     # Project validation
   orchestrator.ts   # Task coordination
   state-manager.ts  # SQLite and filesystem
-  kimi-client.ts    # Moonshot Kimi API client
+  kimi-client.ts    # Gemini API client
   validators.ts     # Input validation
   coding-profile.ts # Kotlin/Android standards
   logger.ts         # Logging utility
@@ -282,12 +291,13 @@ npm run dev  # Watch mode
 
 ## API Integration
 
-This system uses Moonshot Kimi API:
+This system uses Google Gemini API:
 
-- **Endpoint**: `https://api.moonshot.cn/v1/chat/completions`
-- **Model**: `moonshot-v1-128k`
-- **Authentication**: Bearer token (sk-* format)
+- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent`
+- **Model**: `gemini-1.5-pro` (128k context window)
+- **Authentication**: API key in URL query parameter
 - **Default Timeout**: 120 seconds
+- **Free Tier**: 15 RPM, 1M TPM, 1,500 requests/day
 
 ## Non-Goals
 
