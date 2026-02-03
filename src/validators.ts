@@ -34,6 +34,10 @@ export function validateTaskSpec(spec: any): TaskSpec {
     throw new ValidationError('app_name must not include leading or trailing whitespace');
   }
 
+  if (spec.app_name.includes('/') || spec.app_name.includes('\\') || spec.app_name.includes('..')) {
+    throw new ValidationError('app_name must not include path traversal sequences');
+  }
+
   if (spec.app_name.length > 256) {
     throw new ValidationError('app_name must be at most 256 characters');
   }
